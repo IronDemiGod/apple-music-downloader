@@ -22,6 +22,35 @@ import (
 )
 
 func (r *Runner) writeCover(sanAlbumFolder, name string, url string) (string, error) {
+	path, _, err := r.writeCoverFrom(sanAlbumFolder, name, url)
+	return path, err
+}
+
+// fullSizeArtwork is the size requested for a full-resolution cover. Apple's
+// image server caps it at the source resolution, so this returns the
+// largest image there is.
+const fullSizeArtwork = "10000x10000"
+
+// pngArtworkURL turns an Apple artwork URL template (".../{w}x{h}bb.jpg")
+// into a request for a PNG of the given size.
+func pngArtworkURL(template, size string) string {
+	re := regexp.MustCompile(`\{w\}x\{h\}`)
+	parts := re.Split(template, 2)
+	if len(parts) != 2 {
+		return template
+	}
+	rest := parts[1]
+	if i := strings.LastIndex(rest, "."); i >= 0 {
+		rest = rest[:i]
+	}
+	return parts[0] + size + rest + ".png"
+}
+
+// writeCoverFrom is writeCover that also reports, for artwork format
+// "original", whether the untouched source image was saved (true) or, because
+// Apple refused it, a full-size PNG (false). For the other formats it reports
+// false.
+func (r *Runner) writeCoverFrom(sanAlbumFolder, name string, url string) (string, bool, error) {
 	originalUrl := url
 	var ext string
 	var covPath string
@@ -33,9 +62,7 @@ func (r *Runner) writeCover(sanAlbumFolder, name string, url string) (string, er
 		covPath = filepath.Join(sanAlbumFolder, name+"."+r.Config.Metadata.Artwork.Format)
 	}
 	if r.Config.Metadata.Artwork.Format == "png" {
-		re := regexp.MustCompile(`\{w\}x\{h\}`)
-		parts := re.Split(url, 2)
-		url = parts[0] + "{w}x{h}" + strings.Replace(parts[1], ".jpg", ".png", 1)
+		url = pngArtworkURL(url, r.Config.Metadata.Artwork.Size)
 	}
 	url = strings.Replace(url, "{w}x{h}", r.Config.Metadata.Artwork.Size, 1)
 	if r.Config.Metadata.Artwork.Format == "original" {
@@ -45,7 +72,7 @@ func (r *Runner) writeCover(sanAlbumFolder, name string, url string) (string, er
 
 	tmpFile, err := fsutil.CreateOutputTemp(sanAlbumFolder, name+".tmp-*")
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	tmpPath := tmpFile.Name()
 	cleanup := true
@@ -56,27 +83,40 @@ func (r *Runner) writeCover(sanAlbumFolder, name string, url string) (string, er
 		}
 	}()
 
+	fromSource := r.Config.Metadata.Artwork.Format == "original"
+	staleCover := ""
 	if err := r.getCover(url, tmpFile); err != nil {
-		if r.Config.Metadata.Artwork.Format != "original" {
-			return "", err
+		if !fromSource {
+			return "", false, err
 		}
-		splitByDot := strings.Split(originalUrl, ".")
-		last := splitByDot[len(splitByDot)-1]
-		fallback := originalUrl[:len(originalUrl)-len(last)] + ext
-		fallback = strings.Replace(fallback, "{w}x{h}", r.Config.Metadata.Artwork.Size, 1)
-		if err := r.getCover(fallback, tmpFile); err != nil {
-			return "", err
+		// Apple refused the untouched source file. Rather than its
+		// re-encoded JPEG, fetch a full-size PNG: it keeps the source
+		// pixels exactly, at the cost of a larger file.
+		fromSource = false
+		if err := r.getCover(pngArtworkURL(originalUrl, fullSizeArtwork), tmpFile); err != nil {
+			return "", false, err
+		}
+		// A cover saved earlier under the source's extension would now sit
+		// next to the new PNG; it is the file this call replaces.
+		if pngPath := filepath.Join(sanAlbumFolder, name+".png"); pngPath != covPath {
+			staleCover = covPath
+			covPath = pngPath
 		}
 	}
 
 	if err := tmpFile.Close(); err != nil {
-		return "", err
+		return "", false, err
 	}
 	if err := os.Rename(tmpPath, covPath); err != nil {
-		return "", err
+		return "", false, err
 	}
 	cleanup = false
-	return covPath, nil
+	if staleCover != "" {
+		if err := os.Remove(staleCover); err != nil && !os.IsNotExist(err) {
+			fmt.Printf("Could not remove old cover %s: %v\n", staleCover, err)
+		}
+	}
+	return covPath, fromSource, nil
 }
 
 func (r *Runner) getCover(url string, out *os.File) error {

@@ -328,6 +328,8 @@ Windows PowerShell：
 ./amdl "https://music.apple.com/us/playlist/taylor-swift-essentials/pl.3950454ced8c45a3b0cc693c2a7db97b"
 ```
 
+默认情况下，整个播放列表会保存在以其名称命名的单个文件夹中。在 `config.yaml` 中设置 `paths.playlist-album-folders: true`，即可将播放列表中的每首歌曲保存到各自的 `艺人/专辑` 文件夹中，与单曲下载完全一致。
+
 ### 交互式选择
 
 ```bash

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"amdl/internal/fsutil"
 	"context"
 	"errors"
 	"fmt"
@@ -57,7 +58,7 @@ func (r *Runner) mvDownloader(adamID string, saveDir string, token string, store
 		return err
 	}
 
-	if err := os.MkdirAll(saveDir, os.ModePerm); err != nil {
+	if err := fsutil.MkdirAll(saveDir, os.ModePerm); err != nil {
 		return err
 	}
 

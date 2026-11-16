@@ -48,12 +48,16 @@ type PathsConfig struct {
 	MV             string `koanf:"mv"`
 	AlbumFolder    string `koanf:"album-folder"`
 	PlaylistFolder string `koanf:"playlist-folder"`
-	ArtistFolder   string `koanf:"artist-folder"`
-	SongFile       string `koanf:"song-file"`
-	LimitMax       int    `koanf:"limit-max"`
-	Explicit       string `koanf:"explicit"`
-	Clean          string `koanf:"clean"`
-	AppleMaster    string `koanf:"apple-master"`
+	// PlaylistAlbumFolders saves playlist tracks in their own Artist/Album
+	// folders, the way a single-song download does, instead of collecting the
+	// whole playlist in one folder named after it.
+	PlaylistAlbumFolders bool   `koanf:"playlist-album-folders"`
+	ArtistFolder         string `koanf:"artist-folder"`
+	SongFile             string `koanf:"song-file"`
+	LimitMax             int    `koanf:"limit-max"`
+	Explicit             string `koanf:"explicit"`
+	Clean                string `koanf:"clean"`
+	AppleMaster          string `koanf:"apple-master"`
 }
 
 // MetadataConfig holds lyrics, artwork, and tags configurations.

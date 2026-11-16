@@ -316,6 +316,8 @@ On Windows:
 ./amdl "https://music.apple.com/us/playlist/taylor-swift-essentials/pl.3950454ced8c45a3b0cc693c2a7db97b"
 ```
 
+By default the whole playlist is saved in one folder named after it. Set `paths.playlist-album-folders: true` in `config.yaml` to save each playlist track in its own `Artist/Album` folder instead, exactly as a single-song download does.
+
 ### Interactive selection
 
 ```bash

@@ -124,8 +124,8 @@ media:
 		t.Errorf("Media.AtmosMax = %d, want 2768", cfg.Media.AtmosMax)
 	}
 	// Inherited from in-code default
-	if cfg.Metadata.Artwork.Format != "jpg" {
-		t.Errorf("Metadata.Artwork.Format = %q, want 'jpg'", cfg.Metadata.Artwork.Format)
+	if cfg.Metadata.Artwork.Format != "original" {
+		t.Errorf("Metadata.Artwork.Format = %q, want 'original'", cfg.Metadata.Artwork.Format)
 	}
 }
 

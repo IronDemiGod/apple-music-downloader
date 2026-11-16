@@ -743,11 +743,27 @@ func (r *Runner) ripAlbum(albumId string, token string, storefront string, media
 		arr[i] = i + 1
 	}
 
+	// urlArg_i holds the track IDs to download from this album: one for a ?i=
+	// song URL, several (comma separated) for playlist tracks that are being
+	// sorted into their album folders.
 	if urlArg_i != "" {
-		for i := range album.Tracks {
-			if urlArg_i == album.Tracks[i].ID {
-				r.ripTrack(&album.Tracks[i], token, mediaUserToken)
-				return nil
+		for _, wantID := range strings.Split(urlArg_i, ",") {
+			wantID = strings.TrimSpace(wantID)
+			if wantID == "" {
+				continue
+			}
+			found := false
+			for i := range album.Tracks {
+				if wantID == album.Tracks[i].ID {
+					r.ripTrack(&album.Tracks[i], token, mediaUserToken)
+					found = true
+					break
+				}
+			}
+			if !found {
+				fmt.Printf("\u26A0 Track %s is not part of album %s, skipped.\n", wantID, albumId)
+				r.State.Counter.Total++
+				r.State.Counter.Unavailable++
 			}
 		}
 		return nil
@@ -854,8 +870,12 @@ func (r *Runner) ripPlaylist(playlistId string, token string, storefront string,
 	if r.Flags.AAC {
 		singerFolder = filepath.Join(r.Config.Paths.Aac, forbiddenNames.ReplaceAllString(singerFoldername, "_"))
 	}
-	if err := createDirectory(singerFolder); err != nil {
-		return err
+	// With playlist-album-folders every track goes to its own album folder, so
+	// the playlist's "Apple Music" artist folder is never created.
+	if !r.Config.Paths.PlaylistAlbumFolders {
+		if err := createDirectory(singerFolder); err != nil {
+			return err
+		}
 	}
 	playlist.SaveDir = singerFolder
 
@@ -921,6 +941,9 @@ func (r *Runner) ripPlaylist(playlistId string, token string, storefront string,
 		"{Codec}", Codec,
 		"{Tag}", Tag_string,
 	).Replace(r.Config.Paths.PlaylistFolder)
+	if r.Config.Paths.PlaylistAlbumFolders {
+		return r.ripPlaylistIntoAlbumFolders(playlist, playlistFolder, token, storefront, mediaUserToken, Codec)
+	}
 	playlistFolderPath, err := r.prepareCollectionFolder(singerFolder, playlistFolder)
 	if err != nil {
 		return err
@@ -973,16 +996,117 @@ func (r *Runner) ripPlaylist(playlistId string, token string, storefront string,
 	return nil
 }
 
+// ripPlaylistIntoAlbumFolders downloads the selected playlist tracks the way a
+// single-song URL is downloaded: every track lands in its own Artist/Album
+// folder instead of one folder named after the playlist. Tracks are grouped by
+// album so each album's folder, cover and metadata are fetched once, which also
+// means the download order follows albums rather than the playlist order.
+// playlistName only names the optional M3U8 file.
+func (r *Runner) ripPlaylistIntoAlbumFolders(playlist *model.Playlist, playlistName string, token string, storefront string, mediaUserToken string, codec string) error {
+	fmt.Println("playlist-album-folders: sorting tracks into their own Artist/Album folders")
+	var selected []int
+	if !r.Flags.Select {
+		for i := range playlist.Tracks {
+			selected = append(selected, i+1)
+		}
+	} else {
+		selected = playlist.ShowSelect()
+	}
+
+	startIdx := len(r.State.AddedTracks)
+	var albumOrder []string
+	albumTrackIDs := make(map[string][]string)
+
+	for i := range playlist.Tracks {
+		trackNum := i + 1
+		if contains(r.State.OKDict[playlist.ID], trackNum) {
+			r.State.Counter.Total++
+			r.State.Counter.Success++
+			continue
+		}
+		if !contains(selected, trackNum) {
+			continue
+		}
+		track := &playlist.Tracks[i]
+		track.Codec = codec
+
+		// Music videos have no album to sort into, so they keep going to the
+		// music-video folder.
+		if track.Type == "music-videos" {
+			track.SaveDir = r.mvSaveDir(track.Resp.Attributes.ArtistName)
+			r.ripTrack(track, token, mediaUserToken)
+			continue
+		}
+
+		albumId, err := r.albumIDForSong(track.ID, storefront, token)
+		if err != nil {
+			fmt.Printf("\u26A0 Failed to find the album of %q, skipped: %v\n", track.Name, err)
+			r.State.Counter.Total++
+			r.State.Counter.Unavailable++
+			continue
+		}
+		if _, seen := albumTrackIDs[albumId]; !seen {
+			albumOrder = append(albumOrder, albumId)
+		}
+		albumTrackIDs[albumId] = append(albumTrackIDs[albumId], track.ID)
+	}
+
+	for _, albumId := range albumOrder {
+		if err := r.ripAlbum(albumId, token, storefront, mediaUserToken, strings.Join(albumTrackIDs[albumId], ",")); err != nil {
+			fmt.Printf("\u26A0 Failed to rip album %s: %v\n", albumId, err)
+		}
+	}
+
+	// The playlist has no folder of its own here, so the M3U8 goes to the
+	// format folder with the track paths relative to it.
+	r.saveM3UPlaylist(r.formatRoot(), playlistName, startIdx)
+	return nil
+}
+
+// albumIDForSong resolves the catalog album a song belongs to.
+func (r *Runner) albumIDForSong(songId string, storefront string, token string) (string, error) {
+	manifest, err := ampapi.GetSongResp(storefront, songId, r.Config.General.Language, token)
+	if err != nil {
+		return "", err
+	}
+	if len(manifest.Data) == 0 || len(manifest.Data[0].Relationships.Albums.Data) == 0 {
+		return "", errors.New("song response has no album")
+	}
+	return manifest.Data[0].Relationships.Albums.Data[0].ID, nil
+}
+
+// formatRoot is the configured destination folder for the format being downloaded.
+func (r *Runner) formatRoot() string {
+	if r.Flags.Atmos {
+		return r.Config.Paths.Atmos
+	}
+	if r.Flags.AAC {
+		return r.Config.Paths.Aac
+	}
+	return r.Config.Paths.Alac
+}
+
+// mvSaveDir is the music-video folder for artistName, used for playlist tracks
+// that are music videos and so have no album folder to go into.
+func (r *Runner) mvSaveDir(artistName string) string {
+	folder := strings.TrimSpace(strings.NewReplacer(
+		"{ArtistName}", r.LimitString(artistName),
+		"{UrlArtistName}", r.LimitString(artistName),
+		"{ArtistId}", "",
+	).Replace(r.Config.Paths.ArtistFolder))
+	if folder == "" {
+		return r.Config.Paths.MV
+	}
+	return filepath.Join(r.Config.Paths.MV, forbiddenNames.ReplaceAllString(folder, "_"))
+}
+
 func (r *Runner) ripSong(songId string, token string, storefront string, mediaUserToken string) error {
 	// Get song info to find album ID
-	manifest, err := ampapi.GetSongResp(storefront, songId, r.Config.General.Language, token)
+	albumId, err := r.albumIDForSong(songId, storefront, token)
 	if err != nil {
 		fmt.Println("Failed to get song response.")
 		return err
 	}
-
-	songData := manifest.Data[0]
-	albumId := songData.Relationships.Albums.Data[0].ID
 
 	// Use album approach but only download the specific song
 	err = r.ripAlbum(albumId, token, storefront, mediaUserToken, songId)

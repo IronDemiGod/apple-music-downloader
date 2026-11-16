@@ -1,6 +1,7 @@
 package app
 
 import (
+	"amdl/internal/fsutil"
 	"fmt"
 	"os"
 	"os/exec"
@@ -86,7 +87,7 @@ func (r *Runner) saveM3UPlaylist(dir string, name string, startIdx int) {
 }
 
 func createDirectory(path string) error {
-	if err := os.MkdirAll(path, os.ModePerm); err != nil {
+	if err := fsutil.MkdirAll(path, os.ModePerm); err != nil {
 		return fmt.Errorf("create directory %s: %w", path, err)
 	}
 	return nil

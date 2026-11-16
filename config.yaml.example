@@ -42,6 +42,10 @@ paths:
   # Variables: {PlaylistId}, {PlaylistName}, {ArtistName}, {Quality}, {Codec}, {Tag}
   playlist-folder: "{PlaylistName}"
 
+  # Save each playlist track in its own Artist/Album folder, like a single-song download,
+  # instead of collecting the whole playlist in one folder
+  playlist-album-folders: false
+
   # Variables: {ArtistId}, {ArtistName}, {UrlArtistName}. Set to "" to disable artist sub-folder.
   artist-folder: "{UrlArtistName}"
 
@@ -67,7 +71,7 @@ metadata:
   artwork:
     embed: true                           # Embed cover artwork into downloaded audio files
     size: "5000x5000"                     # Cover image resolution: "5000x5000", "3000x3000", "1400x1400", etc.
-    format: "jpg"                         # Image format: "jpg", "png", or "original"
+    format: "original"                    # "original" (source file; full-size PNG if Apple refuses it), "jpg", or "png"
     save-artist: false                    # Save artist banner/avatar cover image to artist folder
     save-animated: false                  # Save motion/animated artwork as video (requires ffmpeg)
     emby-animated: false                  # Save animated artwork formatted for Emby/Jellyfin (requires ffmpeg)
