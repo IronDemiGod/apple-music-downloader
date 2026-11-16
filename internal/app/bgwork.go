@@ -43,12 +43,12 @@ const (
 	postWorkers = 2
 )
 
-// maxConverts is how many ffmpeg conversions run at once. ffmpeg's FLAC
-// encoder uses one core per file, so a machine with more cores converts more
-// files at the same time: one per three CPU threads, between 2 and 6 (2 on a
-// 2-core/4-thread laptop, 4 on a 12-thread PC). The settings, and so the
-// output, of each conversion are unchanged.
-var maxConverts = func() int {
+// autoConverts is how many ffmpeg conversions run at once by default.
+// ffmpeg's FLAC encoder uses one core per file, so a machine with more cores
+// converts more files at the same time: one per three CPU threads, between 2
+// and 6 (2 on a 2-core/4-thread laptop, 4 on a 12-thread PC). The settings,
+// and so the output, of each conversion are unchanged.
+var autoConverts = func() int {
 	n := runtime.NumCPU() / 3
 	if n < 2 {
 		n = 2
@@ -58,6 +58,19 @@ var maxConverts = func() int {
 	}
 	return n
 }()
+
+// parallelConverts is how many conversions run at once: convert.parallel,
+// or autoConverts when it is 0.
+func (r *Runner) parallelConverts() int {
+	n := r.Config.Convert.Parallel
+	switch {
+	case n <= 0:
+		return autoConverts
+	case n > 32:
+		return 32
+	}
+	return n
+}
 
 // trackJob is one track's background work. It holds copies of everything it
 // needs; track is only read, and the main goroutine no longer changes it.
@@ -134,12 +147,12 @@ func (r *Runner) queueJob(job trackJob) {
 		workers := postWorkers
 		if n > 1 {
 			// Enough workers for n downloads plus the tracks being processed.
-			workers = n + maxConverts
+			workers = n + r.parallelConverts()
 		}
 		w := &bgWorker{
 			jobs:      make(chan trackJob, 4096),
 			downloads: make(chan struct{}, n),
-			converts:  make(chan struct{}, maxConverts),
+			converts:  make(chan struct{}, r.parallelConverts()),
 			notify:    make(chan struct{}, 1),
 			done:      make(map[int]trackResult),
 			inflight:  make(map[string]bool),

@@ -168,3 +168,16 @@ func TestCollectJobsDoesNotWait(t *testing.T) {
 		t.Error("waitJobs must apply the job")
 	}
 }
+
+func TestParallelConverts(t *testing.T) {
+	r := &Runner{}
+	if got := r.parallelConverts(); got != autoConverts || got < 2 || got > 6 {
+		t.Errorf("auto = %d (autoConverts %d), want 2..6", got, autoConverts)
+	}
+	for in, want := range map[int]int{1: 1, 4: 4, 100: 32, -3: autoConverts} {
+		r.Config.Convert.Parallel = in
+		if got := r.parallelConverts(); got != want {
+			t.Errorf("convert.parallel %d -> %d, want %d", in, got, want)
+		}
+	}
+}

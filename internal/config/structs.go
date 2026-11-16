@@ -107,6 +107,9 @@ type ConvertConfig struct {
 	SkipIfSourceMatch   bool   `koanf:"skip-if-source-matches"`
 	FFmpegPath          string `koanf:"ffmpeg-path"`
 	ExtraArgs           string `koanf:"extra-args"`
+	// Parallel is how many conversions run at once; 0 = automatic (one per
+	// three CPU threads, 2 to 6).
+	Parallel int `koanf:"parallel"`
 	WithMetadata        bool   `koanf:"with-metadata"`
 	WarnLossyToLossless bool   `koanf:"warn-lossy-to-lossless"`
 	SkipLossyToLossless bool   `koanf:"skip-lossy-to-lossless"`

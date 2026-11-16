@@ -68,7 +68,7 @@ func (r *Runner) trackWorkDir(trackID string) string {
 	if run == "" {
 		return ""
 	}
-	need := int64(workSpacePerTrack) * int64(r.parallelDownloads()+maxConverts+1)
+	need := int64(workSpacePerTrack) * int64(r.parallelDownloads()+r.parallelConverts()+1)
 	if free, err := freeBytes(run); err == nil && free < need {
 		r.sayf("work-dir has only %d MB free; this track works in its save folder.\n", free>>20)
 		return ""

@@ -72,6 +72,7 @@ func Default() Config {
 			SkipIfSourceMatch:   true,
 			FFmpegPath:          "ffmpeg",
 			ExtraArgs:           "",
+			Parallel:            0,
 			WithMetadata:        true,
 			WarnLossyToLossless: true,
 			SkipLossyToLossless: true,

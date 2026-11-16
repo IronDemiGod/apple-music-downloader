@@ -99,6 +99,7 @@ convert:
   keep-original: false                    # Keep original m4a file after successful conversion
   skip-if-source-matches: true            # Skip conversion if downloaded source matches target format
   ffmpeg-path: "ffmpeg"                   # Path to ffmpeg executable (override if not in system PATH)
+  parallel: 0                             # Conversions at once (each uses one CPU core); 0 = automatic: one per 3 CPU threads, 2 to 6
   extra-args: ""                          # Additional raw command-line arguments passed directly to ffmpeg
   with-metadata: true                     # Preserve original metadata and tags in converted files
   warn-lossy-to-lossless: true            # Print a warning when converting a detected lossy source to lossless
