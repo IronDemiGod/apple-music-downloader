@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -41,6 +42,7 @@ type downloadRequest struct {
 }
 
 // downloadTrack downloads one track for a background job; tests replace it.
+// progress, when not nil, is called with the bytes done and the total.
 var downloadTrack = (*Runner).downloadInWorker
 
 // extraWorkerModes lets tests add download modes to the worker; empty in amdl.
@@ -90,8 +92,10 @@ func RunDownloadWorker() int {
 }
 
 // downloadInWorker downloads one track in a child process. It only reads
-// r.Config, so it is safe to call from a background goroutine.
-func (r *Runner) downloadInWorker(req downloadRequest) error {
+// r.Config, so it is safe to call from a background goroutine. The child's
+// stdout (the download's progress bar) is discarded, or parsed for progress
+// when progress is not nil.
+func (r *Runner) downloadInWorker(req downloadRequest, progress func(done, total int64)) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("find amdl executable: %w", err)
@@ -103,10 +107,23 @@ func (r *Runner) downloadInWorker(req downloadRequest) error {
 	}
 	cmd := exec.Command(exe, workerArg)
 	cmd.Stdin = bytes.NewReader(body)
-	cmd.Stdout = nil // discarded: the progress bar
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	err = cmd.Run()
+	if progress == nil {
+		cmd.Stdout = nil // discarded: the progress bar
+		err = cmd.Run()
+	} else {
+		var stdout io.ReadCloser
+		stdout, err = cmd.StdoutPipe()
+		if err != nil {
+			return err
+		}
+		if err = cmd.Start(); err != nil {
+			return err
+		}
+		parseProgress(stdout, progress) // returns when the child closes stdout
+		err = cmd.Wait()
+	}
 	if err == nil {
 		return nil
 	}

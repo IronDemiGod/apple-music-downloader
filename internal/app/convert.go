@@ -118,13 +118,13 @@ func (r *Runner) prepareConvert(srcPath, codec string) (convertJob, bool) {
 
 	// Map extension for output
 	if targetFmt == "copy" {
-		fmt.Println("Convert (copy) requested; skipping because it produces no new format.")
+		r.sayln("Convert (copy) requested; skipping because it produces no new format.")
 		return convertJob{}, false
 	}
 
 	if r.Config.Convert.SkipIfSourceMatch {
 		if ext == "."+targetFmt {
-			fmt.Printf("Conversion skipped (already %s)\n", targetFmt)
+			r.sayf("Conversion skipped (already %s)\n", targetFmt)
 			return convertJob{}, false
 		}
 	}
@@ -136,22 +136,22 @@ func (r *Runner) prepareConvert(srcPath, codec string) (convertJob, bool) {
 	// Handle lossy -> lossless cases: optionally skip or warn
 	if (targetFmt == "flac" || targetFmt == "wav") && r.isLossySource(ext, codec) {
 		if r.Config.Convert.SkipLossyToLossless {
-			fmt.Println("Skipping conversion: source appears lossy and target is lossless; configured to skip.")
+			r.sayln("Skipping conversion: source appears lossy and target is lossless; configured to skip.")
 			return convertJob{}, false
 		}
 		if r.Config.Convert.WarnLossyToLossless {
-			fmt.Println("Warning: Converting lossy source to lossless container will not improve quality.")
+			r.sayln("Warning: Converting lossy source to lossless container will not improve quality.")
 		}
 	}
 
 	if _, err := exec.LookPath(r.Config.Convert.FFmpegPath); err != nil {
-		fmt.Printf("ffmpeg not found at '%s'; skipping conversion.\n", r.Config.Convert.FFmpegPath)
+		r.sayf("ffmpeg not found at '%s'; skipping conversion.\n", r.Config.Convert.FFmpegPath)
 		return convertJob{}, false
 	}
 
 	args, err := r.buildFFmpegArgs(r.Config.Convert.FFmpegPath, srcPath, tmpPath, targetFmt, r.Config.Convert.ExtraArgs)
 	if err != nil {
-		fmt.Println("Conversion config error:", err)
+		r.sayln("Conversion config error:", err)
 		return convertJob{}, false
 	}
 	return convertJob{srcPath: srcPath, outPath: outPath, tmpPath: tmpPath, targetFmt: targetFmt, args: args}, true

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -62,6 +63,10 @@ type trackJob struct {
 	partPath      string // where the download is written
 	finalPath     string // the .m4a name once tagged
 	coverToRemove string // per-track playlist cover, deleted after tagging
+
+	// Live progress list entry (nil when the list is not shown).
+	view *liveView
+	item *liveItem
 
 	convert    bool
 	convertJob convertJob
@@ -164,8 +169,13 @@ func (r *Runner) runJob(job trackJob) trackResult {
 		res.stages = append(res.stages, stageTime{name, now.Sub(last)})
 		last = now
 	}
+	setState := func(st liveState, step string) {
+		job.view.update(job.item, func(it *liveItem) { it.state, it.step = st, step })
+	}
 	fail := func(counter string, format string, args ...any) trackResult {
 		fmt.Fprintf(&out, format+"\n", args...)
+		reason := fmt.Sprintf(format, args...)
+		job.view.update(job.item, func(it *liveItem) { it.state, it.step = liveFailed, reason })
 		// Drop the unfinished file, so a retry downloads the track again.
 		if job.post {
 			os.Remove(job.partPath)
@@ -187,13 +197,17 @@ func (r *Runner) runJob(job trackJob) trackResult {
 
 		r.bg.downloads <- struct{}{}
 		last = time.Now() // don't count the wait for a download slot
+		job.view.update(job.item, func(it *liveItem) { it.state, it.started = liveDownloading, last })
 		req := downloadRequest{AdamID: job.track.ID, Out: job.partPath}
 		var err error
 		if job.aacLC {
 			req.Mode = "aac-lc"
+			job.view.update(job.item, func(it *liveItem) { it.quality = "AAC 256 kbps" })
 		} else {
 			req.Mode = "fairplay"
-			req.URL, _, err = r.extractMedia(job.track.M3u8, false)
+			var quality string
+			req.URL, quality, err = r.extractMediaTo(&out, job.track.M3u8, false)
+			job.view.update(job.item, func(it *liveItem) { it.quality = formatQuality(quality, r.Flags.Atmos, r.Flags.AAC) })
 			if err != nil {
 				<-r.bg.downloads
 				if lyricsCh != nil {
@@ -203,7 +217,13 @@ func (r *Runner) runJob(job trackJob) trackResult {
 			}
 		}
 		if err == nil {
-			err = downloadTrack(r, req)
+			var progress func(done, total int64)
+			if job.item != nil {
+				progress = func(done, total int64) {
+					job.view.update(job.item, func(it *liveItem) { it.done, it.total = done, total })
+				}
+			}
+			err = downloadTrack(r, req, progress)
 		}
 		<-r.bg.downloads
 		if err != nil {
@@ -220,6 +240,7 @@ func (r *Runner) runJob(job trackJob) trackResult {
 			res.bytes = fi.Size()
 			d := res.stages[len(res.stages)-1].d
 			fmt.Fprintf(&out, "Downloaded %s\n", speed(res.bytes, d))
+			job.view.update(job.item, func(it *liveItem) { it.downloadB, it.finished = res.bytes, d })
 		}
 
 		if lyricsCh != nil {
@@ -227,6 +248,7 @@ func (r *Runner) runJob(job trackJob) trackResult {
 			switch {
 			case errors.Is(lr.err, lyrics.ErrLyricsNotFound):
 				fmt.Fprintln(&out, "No lyrics available for this song")
+				job.view.update(job.item, func(it *liveItem) { it.note = "no lyrics" })
 			case lr.err != nil:
 				fmt.Fprintln(&out, lr.err)
 			case lr.lrc != "":
@@ -244,6 +266,7 @@ func (r *Runner) runJob(job trackJob) trackResult {
 	}
 
 	if job.post {
+		setState(liveProcessing, "processing")
 		if err := defrag.DefragmentMP4(job.partPath); err != nil {
 			return fail("error", "Defragment failed: %v", err)
 		}
@@ -279,6 +302,7 @@ func (r *Runner) runJob(job trackJob) trackResult {
 		if job.coverToRemove != "" {
 			if err := os.Remove(job.coverToRemove); err != nil {
 				fmt.Fprintf(&out, "Error deleting file: %s\n", job.coverToRemove)
+				job.view.update(job.item, func(it *liveItem) { it.state, it.step = liveFailed, "could not delete the track's cover" })
 				res.counter = "error"
 				res.output = out.String()
 				return res
@@ -287,14 +311,17 @@ func (r *Runner) runJob(job trackJob) trackResult {
 	}
 
 	if job.convert {
+		setState(liveConverting, "waiting to convert")
 		r.bg.converts <- struct{}{}
 		last = time.Now() // don't count the wait for an ffmpeg slot
+		setState(liveConverting, "converting to "+strings.ToUpper(job.convertJob.targetFmt))
 		if outPath, ok := r.runConvert(job.convertJob, &out); ok {
 			res.path = outPath
 		}
 		<-r.bg.converts
 		mark("convert")
 	}
+	setState(liveDone, "")
 	res.output = out.String()
 	return res
 }
@@ -327,8 +354,18 @@ func (r *Runner) collectJobs() {
 func (r *Runner) applyJob(res trackResult) {
 	job := res.job
 	delete(r.bg.inflight, job.finalPath)
-	fmt.Printf("[background] %s\n", filepath.Base(job.finalPath))
-	fmt.Print(res.output)
+	if job.view != nil {
+		// The live list shows the outcome; keep a failed track's messages to
+		// print after the list.
+		if res.counter != "" {
+			job.view.update(job.item, func(it *liveItem) {
+				it.notes = append(it.notes, strings.Split(strings.TrimSpace(res.output), "\n")...)
+			})
+		}
+	} else {
+		fmt.Printf("[background] %s\n", filepath.Base(job.finalPath))
+		fmt.Print(res.output)
+	}
 	for _, s := range res.stages {
 		r.addBackgroundTiming(s.name, s.d)
 	}

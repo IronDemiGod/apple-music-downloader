@@ -40,7 +40,7 @@ func TestDownloadWorkerProcess(t *testing.T) {
 	r.Config.General.LiteServer = "http://127.0.0.1:12340"
 	out := filepath.Join(t.TempDir(), "01. One.part.m4a")
 
-	if err := r.downloadInWorker(downloadRequest{Mode: "test-copy", AdamID: "42", Out: out}); err != nil {
+	if err := r.downloadInWorker(downloadRequest{Mode: "test-copy", AdamID: "42", Out: out}, nil); err != nil {
 		t.Fatalf("download: %v", err)
 	}
 	got, err := os.ReadFile(out)
@@ -52,11 +52,11 @@ func TestDownloadWorkerProcess(t *testing.T) {
 		t.Errorf("file = %q", got)
 	}
 
-	err = r.downloadInWorker(downloadRequest{Mode: "test-fail", Out: out})
+	err = r.downloadInWorker(downloadRequest{Mode: "test-fail", Out: out}, nil)
 	if err == nil || !strings.Contains(err.Error(), "connection reset") {
 		t.Errorf("failure: got %v, want the worker's message", err)
 	}
-	if err := r.downloadInWorker(downloadRequest{Mode: "test-unavailable", Out: out}); !errors.Is(err, errUnavailable) {
+	if err := r.downloadInWorker(downloadRequest{Mode: "test-unavailable", Out: out}, nil); !errors.Is(err, errUnavailable) {
 		t.Errorf("unavailable: got %v, want errUnavailable", err)
 	}
 }
@@ -102,7 +102,7 @@ func TestParallelDownloadPipeline(t *testing.T) {
 	order := []string{}
 	saved := downloadTrack
 	defer func() { downloadTrack = saved }()
-	downloadTrack = func(r *Runner, req downloadRequest) error {
+	downloadTrack = func(r *Runner, req downloadRequest, progress func(done, total int64)) error {
 		n := atomic.AddInt32(&active, 1)
 		for {
 			m := atomic.LoadInt32(&maxActive)

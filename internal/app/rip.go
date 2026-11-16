@@ -26,18 +26,44 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 	var err error
 	r.collectJobs()
 	r.State.Counter.Total++
-	fmt.Printf("Track %d of %d: %s\n", track.TaskNum, track.TaskTotal, track.Type)
+
+	// With the live list, this track's messages go to its entry instead of the
+	// screen, and its outcome here (already there, failed) is shown in it.
+	r.sayItem = r.live.item(track.TaskNum)
+	if r.sayItem != nil {
+		item, before := r.sayItem, r.State.Counter
+		defer func() {
+			after := r.State.Counter
+			r.live.update(item, func(it *liveItem) {
+				if it.state != liveWaiting {
+					return
+				}
+				switch {
+				case after.Error > before.Error || after.Unavailable > before.Unavailable:
+					it.state = liveFailed
+					it.step = "failed"
+					if len(it.notes) > 0 {
+						it.step = it.notes[len(it.notes)-1]
+					}
+				case after.Success > before.Success:
+					it.state = liveExists
+				}
+			})
+			r.sayItem = nil
+		}()
+	}
+	r.sayf("Track %d of %d: %s\n", track.TaskNum, track.TaskTotal, track.Type)
 
 	//mv dl dev
 	if track.Type == "music-videos" {
 		if r.Config.General.LiteServer == "" {
-			fmt.Println("lite-server is not set, skip MV dl")
+			r.sayln("lite-server is not set, skip MV dl")
 			r.State.Counter.Success++
 			return
 		}
 		err := r.mvDownloader(track.ID, track.SaveDir, token, track.Storefront, track)
 		if err != nil {
-			fmt.Println("\u26A0 Failed to dl MV:", err)
+			r.sayln("\u26A0 Failed to dl MV:", err)
 			r.State.Counter.Error++
 			return
 		}
@@ -51,11 +77,11 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 	}
 	if track.WebM3u8 == "" && !needDlAacLc {
 		if r.Flags.Atmos {
-			fmt.Println("Unavailable")
+			r.sayln("Unavailable")
 			r.State.Counter.Unavailable++
 			return
 		}
-		fmt.Println("Unavailable, trying to dl aac-lc")
+		r.sayln("Unavailable, trying to dl aac-lc")
 		needDlAacLc = true
 	}
 	needCheck := false
@@ -82,7 +108,7 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 		} else {
 			_, Quality, err = r.extractMedia(track.M3u8, true)
 			if err != nil {
-				fmt.Println("Failed to extract quality from manifest.\n", err)
+				r.sayln("Failed to extract quality from manifest.\n", err)
 				r.State.Counter.Error++
 				return
 			}
@@ -119,7 +145,7 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 		"{Tag}", Tag_string,
 		"{Codec}", track.Codec,
 	).Replace(r.Config.Paths.SongFile)
-	fmt.Println(songName)
+	r.sayln(songName)
 	filename := fmt.Sprintf("%s.m4a", forbiddenNames.ReplaceAllString(songName, "_"))
 	track.SaveName = filename
 	trackPath := filepath.Join(track.SaveDir, track.SaveName)
@@ -153,7 +179,7 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 	// The same song is still being processed in the background (e.g. it is in
 	// a playlist twice): count it as done, like an existing file.
 	if r.isInflight(trackPath) {
-		fmt.Println("Track is already being processed.")
+		r.sayln("Track is already being processed.")
 		r.State.Counter.Success++
 		r.State.OKDict[track.PreID] = append(r.State.OKDict[track.PreID], track.TaskNum)
 		if considerConverted {
@@ -166,10 +192,10 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 	// Existence check now considers converted output (if original was deleted)
 	existsOriginal, err := fileExists(trackPath)
 	if err != nil {
-		fmt.Println("Failed to check if track exists.")
+		r.sayln("Failed to check if track exists.")
 	}
 	if existsOriginal {
-		fmt.Println("Track already exists locally.")
+		r.sayln("Track already exists locally.")
 		r.State.Counter.Success++
 		r.State.OKDict[track.PreID] = append(r.State.OKDict[track.PreID], track.TaskNum)
 
@@ -180,7 +206,7 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 			if done, _ := fileExists(convertedPath); !done {
 				if cj, ok := r.prepareConvert(trackPath, track.Codec); ok {
 					r.queueJob(trackJob{finalPath: trackPath, convert: true, convertJob: cj, added: added})
-					fmt.Println("Not converted yet: conversion queued (runs in the background).")
+					r.sayln("Not converted yet: conversion queued (runs in the background).")
 					return
 				}
 			}
@@ -191,7 +217,7 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 	if considerConverted {
 		existsConverted, err2 := fileExists(convertedPath)
 		if err2 == nil && existsConverted {
-			fmt.Println("Converted track already exists locally.")
+			r.sayln("Converted track already exists locally.")
 			r.State.Counter.Success++
 			r.State.OKDict[track.PreID] = append(r.State.OKDict[track.PreID], track.TaskNum)
 			added.Path = convertedPath
@@ -203,7 +229,7 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 	//提前获取到的播放列表下track所在的专辑信息
 	if track.PreType == "playlists" && r.Config.Metadata.Tags.UseSongInfoForPlaylist {
 		if err := track.GetAlbumData(token); err != nil {
-			fmt.Println("Failed to get album data for playlist track:", err)
+			r.sayln("Failed to get album data for playlist track:", err)
 			r.State.Counter.Error++
 			return
 		}
@@ -211,9 +237,9 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 
 	// Parallel downloads: the download itself, the lyrics and all processing
 	// run on the background workers (see bgwork.go and dlworker.go).
-	if r.parallelDownloads() > 1 {
+	if r.parallelDownloads() > 1 || r.live != nil {
 		if needDlAacLc && r.Config.General.LiteServer == "" {
-			fmt.Println("aac-lc download requires lite-server, but it is not configured")
+			r.sayln("aac-lc download requires lite-server, but it is not configured")
 			r.State.Counter.Error++
 			return
 		}
@@ -232,13 +258,15 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 			preID:         track.PreID,
 			taskNum:       track.TaskNum,
 			added:         added,
+			view:          r.live,
+			item:          r.sayItem,
 		}
 		if cj, ok := r.prepareConvert(trackPath, track.Codec); ok {
 			job.convert = true
 			job.convertJob = cj
 		}
 		r.queueJob(job)
-		fmt.Println("Queued for download.")
+		r.sayln("Queued for download.")
 		return
 	}
 
@@ -263,15 +291,15 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 		lyricsCh = nil
 		if res.err != nil {
 			if errors.Is(res.err, lyrics.ErrLyricsNotFound) {
-				fmt.Println("No lyrics available for this song")
+				r.sayln("No lyrics available for this song")
 			} else {
-				fmt.Println(res.err)
+				r.sayln(res.err)
 			}
 			return
 		}
 		if r.Config.Metadata.Lyrics.SaveFile && res.lrc != "" {
 			if err := r.writeLyrics(track.SaveDir, lrcFilename, res.lrc); err != nil {
-				fmt.Printf("Failed to write lyrics")
+				r.sayf("Failed to write lyrics")
 			}
 		}
 		if r.Config.Metadata.Lyrics.Embed && res.lrc != "" {
@@ -282,14 +310,14 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 
 	if needDlAacLc {
 		if r.Config.General.LiteServer == "" {
-			fmt.Println("aac-lc download requires lite-server, but it is not configured")
+			r.sayln("aac-lc download requires lite-server, but it is not configured")
 			r.State.Counter.Error++
 			return
 		}
 		err := runv5.DownloadSong(context.Background(), track.ID, partPath, r.Config.General.LiteServer)
 		if err != nil {
 			os.Remove(partPath)
-			fmt.Println("Failed to dl aac-lc via lite-server:", err)
+			r.sayln("Failed to dl aac-lc via lite-server:", err)
 			if err.Error() == "Unavailable" {
 				r.State.Counter.Unavailable++
 				return
@@ -300,7 +328,7 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 	} else {
 		trackM3u8Url, _, err := r.extractMedia(track.M3u8, false)
 		if err != nil {
-			fmt.Println("\u26A0 Failed to extract info from manifest:", err)
+			r.sayln("\u26A0 Failed to extract info from manifest:", err)
 			r.State.Counter.Unavailable++
 			return
 		}
@@ -309,7 +337,7 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 		err = fairplayrip.Run(track.ID, trackM3u8Url, partPath, r.Config)
 		if err != nil {
 			os.Remove(partPath)
-			fmt.Println("Failed to run v4:", err)
+			r.sayln("Failed to run v4:", err)
 			r.State.Counter.Error++
 			return
 		}
@@ -347,7 +375,7 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 		job.convertJob = cj
 	}
 	r.queueJob(job)
-	fmt.Println("Downloaded; processing in the background.")
+	r.sayln("Downloaded; processing in the background.")
 	r.finishStageTimer(timer)
 }
 
@@ -363,7 +391,7 @@ func (r *Runner) playlistTrackCover(track *model.Track) (string, bool) {
 	}
 	path, err := r.writeCover(track.SaveDir, track.ID, track.Resp.Attributes.Artwork.URL)
 	if err != nil {
-		fmt.Println("Failed to write cover.")
+		r.sayln("Failed to write cover.")
 		return "", true
 	}
 	track.CoverPath = path
@@ -796,6 +824,8 @@ func (r *Runner) ripAlbum(albumId string, token string, storefront string, media
 	// song URL, several (comma separated) for playlist tracks that are being
 	// sorted into their album folders.
 	if urlArg_i != "" {
+		var wanted []*model.Track
+		var missing []string
 		for _, wantID := range strings.Split(urlArg_i, ",") {
 			wantID = strings.TrimSpace(wantID)
 			if wantID == "" {
@@ -804,17 +834,25 @@ func (r *Runner) ripAlbum(albumId string, token string, storefront string, media
 			found := false
 			for i := range album.Tracks {
 				if wantID == album.Tracks[i].ID {
-					r.ripTrack(&album.Tracks[i], token, mediaUserToken)
+					wanted = append(wanted, &album.Tracks[i])
 					found = true
 					break
 				}
 			}
 			if !found {
-				fmt.Printf("\u26A0 Track %s is not part of album %s, skipped.\n", wantID, albumId)
-				r.State.Counter.Total++
-				r.State.Counter.Unavailable++
+				missing = append(missing, wantID)
 			}
 		}
+		for _, id := range missing {
+			fmt.Printf("\u26A0 Track %s is not part of album %s, skipped.\n", id, albumId)
+			r.State.Counter.Total++
+			r.State.Counter.Unavailable++
+		}
+		r.beginLive(meta.Data[0].Attributes.ArtistName+" — "+meta.Data[0].Attributes.Name, wanted)
+		for _, t := range wanted {
+			r.ripTrack(t, token, mediaUserToken)
+		}
+		r.endLive()
 		return nil
 	}
 	var selected []int
@@ -825,17 +863,20 @@ func (r *Runner) ripAlbum(albumId string, token string, storefront string, media
 		selected = album.ShowSelect()
 	}
 	startIdx := len(r.State.AddedTracks)
+	r.beginLive(meta.Data[0].Attributes.ArtistName+" — "+meta.Data[0].Attributes.Name, selectedTracks(album.Tracks, selected))
 	for i := range album.Tracks {
 		i++
 		if contains(r.State.OKDict[albumId], i) {
 			r.State.Counter.Total++
 			r.State.Counter.Success++
+			r.markLiveDone(album.Tracks[i-1].TaskNum)
 			continue
 		}
 		if contains(selected, i) {
 			r.ripTrack(&album.Tracks[i-1], token, mediaUserToken)
 		}
 	}
+	r.endLive()
 	r.saveM3UPlaylist(albumFolderPath, albumFolderName, startIdx)
 	return nil
 
@@ -1032,17 +1073,20 @@ func (r *Runner) ripPlaylist(playlistId string, token string, storefront string,
 		selected = playlist.ShowSelect()
 	}
 	startIdx := len(r.State.AddedTracks)
+	r.beginLive(meta.Data[0].Attributes.Name, selectedTracks(playlist.Tracks, selected))
 	for i := range playlist.Tracks {
 		i++
 		if contains(r.State.OKDict[playlistId], i) {
 			r.State.Counter.Total++
 			r.State.Counter.Success++
+			r.markLiveDone(playlist.Tracks[i-1].TaskNum)
 			continue
 		}
 		if contains(selected, i) {
 			r.ripTrack(&playlist.Tracks[i-1], token, mediaUserToken)
 		}
 	}
+	r.endLive()
 	r.saveM3UPlaylist(playlistFolderPath, playlistFolder, startIdx)
 	return nil
 }

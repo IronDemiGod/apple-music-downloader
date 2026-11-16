@@ -36,6 +36,7 @@ func Main() {
 	pflag.BoolVar(&r.Flags.ArtistSelect, "all-album", false, "Download all artist albums")
 	pflag.BoolVar(&r.Flags.Debug, "debug", false, "Enable debug mode to show audio quality information")
 	pflag.BoolVar(&r.Flags.PrintJSON, "json", false, "Output JSON summary at the end")
+	pflag.BoolVar(&r.Flags.NoLive, "no-live", false, "Print plain lines instead of the live progress list")
 	pflag.BoolVar(&r.Flags.Timings, "timings", false, "Print how long each stage of every track takes, and a summary at the end")
 	pflag.BoolVar(&r.Flags.SaveM3U8, "save-m3u8-playlist", false, "Save M3U8 playlist file")
 	pflag.StringVar(&r.Flags.LiteServerFlag, "lite-server", "", "wrapper-lite HTTP API endpoint for this run")

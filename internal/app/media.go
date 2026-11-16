@@ -438,6 +438,13 @@ func formatAvailability(available bool, quality string) string {
 }
 
 func (r *Runner) extractMedia(b string, more_mode bool) (string, string, error) {
+	return r.extractMediaTo(os.Stdout, b, more_mode)
+}
+
+// extractMediaTo is extractMedia writing its (non-debug) message about the
+// chosen stream to w, so background workers can collect it instead of
+// printing it.
+func (r *Runner) extractMediaTo(w io.Writer, b string, more_mode bool) (string, string, error) {
 	masterUrl, err := url.Parse(b)
 	if err != nil {
 		return "", "", err
@@ -582,7 +589,7 @@ func (r *Runner) extractMedia(b string, more_mode bool) (string, string, error) 
 				}
 				if length_int <= r.Config.Media.AtmosMax {
 					if !r.Flags.Debug && !more_mode {
-						fmt.Printf("%s\n", variant.Audio)
+						fmt.Fprintf(w, "%s\n", variant.Audio)
 					}
 					streamUrlTemp, err := masterUrl.Parse(variant.URI)
 					if err != nil {
@@ -615,7 +622,7 @@ func (r *Runner) extractMedia(b string, more_mode bool) (string, string, error) 
 				replaced := aacregex.ReplaceAllString(variant.Audio, "aac")
 				if replaced == r.Config.Media.AacType {
 					if !r.Flags.Debug && !more_mode {
-						fmt.Printf("%s\n", variant.Audio)
+						fmt.Fprintf(w, "%s\n", variant.Audio)
 					}
 					streamUrlTemp, err := masterUrl.Parse(variant.URI)
 					if err != nil {
@@ -641,7 +648,7 @@ func (r *Runner) extractMedia(b string, more_mode bool) (string, string, error) 
 				}
 				if length_int <= r.Config.Media.AlacMax {
 					if !r.Flags.Debug && !more_mode {
-						fmt.Printf("%s-bit / %s Hz\n", split[length-1], split[length-2])
+						fmt.Fprintf(w, "%s-bit / %s Hz\n", split[length-1], split[length-2])
 					}
 					streamUrlTemp, err := masterUrl.Parse(variant.URI)
 					if err != nil {

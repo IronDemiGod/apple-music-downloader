@@ -2,8 +2,10 @@ package app
 
 import (
 	"amdl/internal/config"
+	"fmt"
 	"os"
 	"regexp"
+	"strings"
 )
 
 var (
@@ -26,6 +28,7 @@ type Flags struct {
 	ForceUpdate    bool
 	MigrateConfig  bool
 	Timings        bool
+	NoLive         bool
 }
 
 type State struct {
@@ -40,6 +43,32 @@ type Runner struct {
 	Flags  Flags
 	State  State
 	bg     *bgWorker // background post-processing workers, started on first use
+	live   *liveView // live progress list of the album/playlist being downloaded
+
+	// sayItem is the live list entry of the track being prepared on the main
+	// goroutine; sayf/sayln send its messages there instead of the screen.
+	sayItem *liveItem
+}
+
+// sayf prints a message about the current track, or, while the live list is
+// shown, keeps it in the track's entry (printed after the list if it failed).
+// Main goroutine only.
+func (r *Runner) sayf(format string, a ...any) {
+	msg := fmt.Sprintf(format, a...)
+	if r.live == nil {
+		fmt.Print(msg)
+		return
+	}
+	msg = strings.TrimSpace(msg)
+	if msg == "" || r.sayItem == nil {
+		return
+	}
+	r.live.update(r.sayItem, func(it *liveItem) { it.notes = append(it.notes, msg) })
+}
+
+// sayln is sayf with fmt.Println formatting.
+func (r *Runner) sayln(a ...any) {
+	r.sayf("%s", fmt.Sprintln(a...))
 }
 
 func NewRunner(cfg config.ConfigSet) *Runner {
