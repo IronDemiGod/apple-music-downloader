@@ -120,8 +120,14 @@ func TestRenderRedrawsInPlace(t *testing.T) {
 	buf.Reset()
 	v.render()
 	// The second frame moves the cursor up over the 5 lines of the first.
-	if !strings.HasPrefix(buf.String(), "\x1b[5A") {
-		t.Errorf("second frame does not start by moving up 5 lines: %q", buf.String()[:10])
+	if buf.Len() != 0 {
+		t.Errorf("an unchanged frame must not be redrawn, got %q", buf.String())
+	}
+	v.items[0].state = liveDone
+	v.render()
+	// A changed frame moves the cursor up over the 5 lines of the first.
+	if !strings.HasPrefix(buf.String(), "\x1b[?2026h\x1b[5A") {
+		t.Errorf("changed frame does not start by moving up 5 lines: %q", buf.String()[:16])
 	}
 	if first == 0 {
 		t.Error("first frame is empty")

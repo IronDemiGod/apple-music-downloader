@@ -417,14 +417,15 @@ func (r *Runner) checkM3u8(b string, f string) (string, error) {
 		if errors.Is(err, wrapper.ErrNotConfigured) {
 			return "", err
 		}
-		fmt.Println("Error connecting to lite-server:", err)
+		r.sayln("Error connecting to lite-server:", err)
 		return "", err
 	}
 	if f == "song" {
+		// sayln: kept in the track's entry while the live list is shown.
 		if EnhancedHls != "" {
-			fmt.Println("Received URL:", EnhancedHls)
+			r.sayln("Received URL:", EnhancedHls)
 		} else {
-			fmt.Println("Received an empty response")
+			r.sayln("Received an empty response")
 		}
 	}
 	return EnhancedHls, nil

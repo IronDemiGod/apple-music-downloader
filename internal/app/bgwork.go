@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -40,9 +41,23 @@ const (
 	// downloads run one after another. One job can take longer than one
 	// download on a fast connection (convert alone ~2 s); two keep up.
 	postWorkers = 2
-	// maxConverts limits concurrent ffmpeg processes (each uses a full core).
-	maxConverts = 2
 )
+
+// maxConverts is how many ffmpeg conversions run at once. ffmpeg's FLAC
+// encoder uses one core per file, so a machine with more cores converts more
+// files at the same time: one per three CPU threads, between 2 and 6 (2 on a
+// 2-core/4-thread laptop, 4 on a 12-thread PC). The settings, and so the
+// output, of each conversion are unchanged.
+var maxConverts = func() int {
+	n := runtime.NumCPU() / 3
+	if n < 2 {
+		n = 2
+	}
+	if n > 6 {
+		n = 6
+	}
+	return n
+}()
 
 // trackJob is one track's background work. It holds copies of everything it
 // needs; track is only read, and the main goroutine no longer changes it.

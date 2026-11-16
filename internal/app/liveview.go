@@ -62,7 +62,8 @@ type liveView struct {
 
 	mu    sync.Mutex
 	items []*liveItem
-	lines int // lines drawn by the last frame
+	lines int    // lines drawn by the last frame
+	last  string // the last frame drawn, to skip unchanged redraws
 
 	stop chan struct{}
 	done chan struct{}
@@ -91,6 +92,7 @@ func (r *Runner) startLive(title string, tracks []liveItem) *liveView {
 		it := tracks[i]
 		v.items = append(v.items, &it)
 	}
+	io.WriteString(v.out, "\x1b[?25l") // hide the cursor while redrawing
 	v.render()
 	go func() {
 		defer close(v.done)
@@ -140,6 +142,7 @@ func (v *liveView) finish() {
 	close(v.stop)
 	<-v.done
 	v.render()
+	io.WriteString(v.out, "\x1b[?25h") // show the cursor again
 }
 
 // render redraws the list in place.
@@ -151,23 +154,35 @@ func (v *liveView) render() {
 		width, height = w, h
 	}
 	lines := v.frame(width, height)
+	key := strings.Join(lines, "\n")
+	if key == v.last && v.lines == len(lines) {
+		return // nothing changed
+	}
+	v.last = key
 
+	// One write per frame, wrapped in "synchronized output" (mode 2026) so
+	// terminals that support it (Windows Terminal, most modern ones) show the
+	// frame only once it is complete; others ignore it. Each line is
+	// overwritten and then erased to its end, never blanked first, so a frame
+	// that arrives in pieces (e.g. over SSH) does not flash empty lines.
 	var b bytes.Buffer
+	b.WriteString("\x1b[?2026h")
 	if v.lines > 0 {
 		fmt.Fprintf(&b, "\x1b[%dA", v.lines) // back to the first line of the last frame
 	}
 	for _, l := range lines {
-		b.WriteString("\r\x1b[2K")
+		b.WriteString("\r")
 		b.WriteString(l)
-		b.WriteString("\n")
+		b.WriteString("\x1b[K\n")
 	}
 	// Clear lines left over from a taller previous frame.
 	for i := len(lines); i < v.lines; i++ {
-		b.WriteString("\r\x1b[2K\n")
+		b.WriteString("\r\x1b[K\n")
 	}
 	if extra := v.lines - len(lines); extra > 0 {
 		fmt.Fprintf(&b, "\x1b[%dA", extra)
 	}
+	b.WriteString("\x1b[?2026l")
 	v.out.Write(b.Bytes())
 	v.lines = len(lines)
 }

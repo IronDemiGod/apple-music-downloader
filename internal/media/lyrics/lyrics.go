@@ -40,8 +40,10 @@ func getSongLyrics(songId string, liteServer string, lrcType string, language st
 		if errors.Is(err, wrapper.ErrLyricsNotFound) {
 			return "", err
 		}
+		// The caller reports the error (printing it here would also break the
+		// live progress list, as this runs on a background worker).
 		if !errors.Is(err, wrapper.ErrNotConfigured) {
-			fmt.Println("Error connecting to lite-server:", err)
+			return "", fmt.Errorf("Error connecting to lite-server: %w", err)
 		}
 		return "", err
 	}
