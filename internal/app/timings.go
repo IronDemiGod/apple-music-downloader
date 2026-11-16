@@ -38,6 +38,7 @@ type Timings struct {
 	bgOrder  []string
 	bgTotals map[string]time.Duration
 	bgCount  map[string]int
+	bgBytes  int64 // bytes downloaded by background workers
 	wait     time.Duration
 }
 
@@ -68,6 +69,21 @@ func (r *Runner) addBackgroundTiming(name string, d time.Duration) {
 	}
 	tm.bgTotals[name] += d
 	tm.bgCount[name]++
+}
+
+// addBackgroundBytes records bytes downloaded by a background worker.
+func (r *Runner) addBackgroundBytes(n int64) {
+	if !r.Flags.Timings {
+		return
+	}
+	r.State.Timings.bgBytes += n
+}
+
+// startTimingsClock starts the wall clock, if it is not running yet.
+func (r *Runner) startTimingsClock() {
+	if r.Flags.Timings && r.State.Timings.start.IsZero() {
+		r.State.Timings.start = time.Now()
+	}
 }
 
 // addWaitTiming records time spent waiting for background work to finish.
@@ -150,31 +166,46 @@ func (r *Runner) finishStageTimer(t *stageTimer) {
 // printTimingsSummary prints each stage's share of the run's timed tracks.
 func (r *Runner) printTimingsSummary() {
 	tm := r.State.Timings
-	if !r.Flags.Timings || tm.tracks == 0 {
+	if !r.Flags.Timings || (tm.tracks == 0 && len(tm.bgOrder) == 0) {
 		return
 	}
-	fmt.Printf("\u23F1 Timings over %d downloaded track(s), total %s:\n", tm.tracks, fmtDur(tm.total))
-	for _, name := range tm.order {
-		d := tm.totals[name]
-		pct := 0.0
-		if tm.total > 0 {
-			pct = 100 * float64(d) / float64(tm.total)
+	if tm.tracks > 0 {
+		fmt.Printf("\u23F1 Timings over %d downloaded track(s), total %s:\n", tm.tracks, fmtDur(tm.total))
+		for _, name := range tm.order {
+			d := tm.totals[name]
+			pct := 0.0
+			if tm.total > 0 {
+				pct = 100 * float64(d) / float64(tm.total)
+			}
+			fmt.Printf("   %-10s %9s  %5.1f%%  (avg %s)\n", name, fmtDur(d), pct, fmtDur(d/time.Duration(tm.tracks)))
 		}
-		fmt.Printf("   %-10s %9s  %5.1f%%  (avg %s)\n", name, fmtDur(d), pct, fmtDur(d/time.Duration(tm.tracks)))
-	}
-	if sp := speed(tm.bytes, tm.totals["download"]); sp != "" {
-		fmt.Printf("   downloaded %s (average while downloading)\n", sp)
+		if sp := speed(tm.bytes, tm.totals["download"]); sp != "" {
+			fmt.Printf("   downloaded %s (average while downloading)\n", sp)
+		}
+	} else {
+		fmt.Printf("\u23F1 Timings (%d parallel downloads):\n", r.parallelDownloads())
 	}
 	if len(tm.bgOrder) > 0 {
-		fmt.Println("   in the background, overlapping the stages above:")
+		if tm.tracks > 0 {
+			fmt.Println("   in the background, overlapping the stages above:")
+		} else {
+			fmt.Println("   per stage, summed over tracks (tracks overlap each other):")
+		}
 		for _, name := range tm.bgOrder {
 			d := tm.bgTotals[name]
 			fmt.Printf("   %-10s %9s  (%d file(s), avg %s)\n", name, fmtDur(d), tm.bgCount[name], fmtDur(d/time.Duration(tm.bgCount[name])))
 		}
+		if sp := speed(tm.bgBytes, tm.bgTotals["download"]); sp != "" {
+			fmt.Printf("   each download: %s on average\n", sp)
+		}
 		fmt.Printf("   waited for the background work: %s\n", fmtDur(tm.wait))
 	}
 	if !tm.start.IsZero() {
-		fmt.Printf("   wall time: %s\n", fmtDur(time.Since(tm.start)))
+		wall := time.Since(tm.start)
+		fmt.Printf("   wall time: %s\n", fmtDur(wall))
+		if sp := speed(tm.bytes+tm.bgBytes, wall); sp != "" {
+			fmt.Printf("   overall: %s (all data over the wall time)\n", sp)
+		}
 	}
 }
 

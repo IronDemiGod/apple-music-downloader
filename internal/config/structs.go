@@ -22,6 +22,7 @@ type GeneralConfig struct {
 	LiteServer         string `koanf:"lite-server"`
 	MaxMemoryLimit     int    `koanf:"max-memory-limit"`
 	ExitOnError        bool   `koanf:"exit-on-error"`
+	ParallelDownloads  int    `koanf:"parallel-downloads"`
 }
 
 // MediaConfig holds audio quality, m3u8 detection mode, and video settings.

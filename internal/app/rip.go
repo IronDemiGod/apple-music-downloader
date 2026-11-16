@@ -209,6 +209,39 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 		}
 	}
 
+	// Parallel downloads: the download itself, the lyrics and all processing
+	// run on the background workers (see bgwork.go and dlworker.go).
+	if r.parallelDownloads() > 1 {
+		if needDlAacLc && r.Config.General.LiteServer == "" {
+			fmt.Println("aac-lc download requires lite-server, but it is not configured")
+			r.State.Counter.Error++
+			return
+		}
+		coverToRemove, _ := r.playlistTrackCover(track)
+		track.SavePath = trackPath
+		job := trackJob{
+			download:      true,
+			aacLC:         needDlAacLc,
+			lyrics:        r.Config.Metadata.Lyrics.Embed || r.Config.Metadata.Lyrics.SaveFile,
+			lrcFilename:   lrcFilename,
+			post:          true,
+			track:         track,
+			partPath:      partPath,
+			finalPath:     trackPath,
+			coverToRemove: coverToRemove,
+			preID:         track.PreID,
+			taskNum:       track.TaskNum,
+			added:         added,
+		}
+		if cj, ok := r.prepareConvert(trackPath, track.Codec); ok {
+			job.convert = true
+			job.convertJob = cj
+		}
+		r.queueJob(job)
+		fmt.Println("Queued for download.")
+		return
+	}
+
 	timer := r.newStageTimer()
 
 	// Fetch lyrics concurrently with the audio download; the result (and any
@@ -289,19 +322,9 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 	collectLyrics()
 	timer.mark("lyrics")
 
-	// Per-track playlist cover: fetched here (network), embedded and deleted by
-	// the background job.
-	coverToRemove := ""
-	if r.Config.Metadata.Artwork.Embed {
-		if (strings.Contains(track.PreID, "pl.") || strings.Contains(track.PreID, "ra.")) && r.Config.Metadata.Artwork.DlForPlaylist {
-			track.CoverPath, err = r.writeCover(track.SaveDir, track.ID, track.Resp.Attributes.Artwork.URL)
-			if err != nil {
-				fmt.Println("Failed to write cover.")
-			} else {
-				coverToRemove = track.CoverPath
-			}
-			timer.mark("cover")
-		}
+	coverToRemove, fetched := r.playlistTrackCover(track)
+	if fetched {
+		timer.mark("cover")
 	}
 	track.SavePath = trackPath
 
@@ -326,6 +349,25 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 	r.queueJob(job)
 	fmt.Println("Downloaded; processing in the background.")
 	r.finishStageTimer(timer)
+}
+
+// playlistTrackCover fetches a playlist track's own cover when
+// artwork.dl-for-playlist is on. It returns the cover to delete once it is
+// embedded, and whether a fetch was attempted.
+func (r *Runner) playlistTrackCover(track *model.Track) (string, bool) {
+	if !r.Config.Metadata.Artwork.Embed || !r.Config.Metadata.Artwork.DlForPlaylist {
+		return "", false
+	}
+	if !strings.Contains(track.PreID, "pl.") && !strings.Contains(track.PreID, "ra.") {
+		return "", false
+	}
+	path, err := r.writeCover(track.SaveDir, track.ID, track.Resp.Attributes.Artwork.URL)
+	if err != nil {
+		fmt.Println("Failed to write cover.")
+		return "", true
+	}
+	track.CoverPath = path
+	return path, true
 }
 
 func releaseYear(date string) string {
@@ -540,6 +582,7 @@ func (r *Runner) ripStation(albumId string, token string, storefront string, med
 	if !r.Flags.Select {
 		selected = arr
 	} else {
+		r.waitJobs() // finish (and print) earlier tracks before prompting
 		selected = station.ShowSelect()
 	}
 	startIdx := len(r.State.AddedTracks)
@@ -778,6 +821,7 @@ func (r *Runner) ripAlbum(albumId string, token string, storefront string, media
 	if !r.Flags.Select {
 		selected = arr
 	} else {
+		r.waitJobs() // finish (and print) earlier tracks before prompting
 		selected = album.ShowSelect()
 	}
 	startIdx := len(r.State.AddedTracks)
@@ -984,6 +1028,7 @@ func (r *Runner) ripPlaylist(playlistId string, token string, storefront string,
 	if !r.Flags.Select {
 		selected = arr
 	} else {
+		r.waitJobs() // finish (and print) earlier tracks before prompting
 		selected = playlist.ShowSelect()
 	}
 	startIdx := len(r.State.AddedTracks)
@@ -1016,6 +1061,7 @@ func (r *Runner) ripPlaylistIntoAlbumFolders(playlist *model.Playlist, playlistN
 			selected = append(selected, i+1)
 		}
 	} else {
+		r.waitJobs() // finish (and print) earlier tracks before prompting
 		selected = playlist.ShowSelect()
 	}
 

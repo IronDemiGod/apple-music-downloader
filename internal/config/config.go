@@ -272,6 +272,9 @@ func (c *Config) Validate() error {
 	if len(c.General.Storefront) != 2 {
 		c.General.Storefront = "us"
 	}
+	if c.General.ParallelDownloads < 1 {
+		c.General.ParallelDownloads = 1
+	}
 	if c.General.MaxMemoryLimit == 0 {
 		c.General.MaxMemoryLimit = 256
 	}

@@ -18,6 +18,10 @@ import (
 )
 
 func Main() {
+	// A child process doing one download for --parallel-downloads (dlworker.go).
+	if IsDownloadWorker() {
+		os.Exit(RunDownloadWorker())
+	}
 	r := NewRunner(config.ConfigSet{})
 
 	var (

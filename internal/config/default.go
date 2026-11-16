@@ -13,6 +13,7 @@ func Default() Config {
 			LiteServer:         "http://127.0.0.1:12340",
 			MaxMemoryLimit:     256,
 			ExitOnError:        false,
+			ParallelDownloads:  1,
 		},
 		Media: MediaConfig{
 			GetM3u8Mode: "hires",

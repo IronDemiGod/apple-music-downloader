@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,39 +11,55 @@ import (
 
 	"amdl/internal/media/alacfix"
 	defrag "amdl/internal/media/defrag"
+	"amdl/internal/media/lyrics"
 	"amdl/internal/model"
 )
 
-// Background post-processing: once a track is downloaded, its defrag,
-// alac-fix, tagging and ffmpeg conversion run on a background worker while
-// the main goroutine downloads the next track (network/wrapper-bound).
+// Background work. The main goroutine walks the tracks in order (names,
+// "already exists" checks) and queues each new track as a job; workers then do
+// the rest while the main goroutine moves on:
 //
-// A track is downloaded to a temporary ".part" name and only renamed to its
-// final name once it is fully tagged, so a run that is stopped halfway never
-// leaves a file that the next run mistakes for a finished track.
+//   - with general.parallel-downloads > 1: the download itself (in a child
+//     process, see dlworker.go) plus the lyrics, up to that many at once;
+//   - always: defrag, alac-fix, tagging, the rename from the temporary ".part"
+//     name to the final name, and the optional ffmpeg conversion.
+//
+// A track is downloaded to a ".part" name and only renamed to its final name
+// once it is fully tagged, so a run that is stopped halfway never leaves a file
+// that the next run mistakes for a finished track.
 //
 // The workers never touch Runner.State or print directly: each job returns its
 // messages and outcome, and the main goroutine applies them strictly in the
-// order the jobs were queued (so counters, AddedTracks and M3U order stay as
-// before), between tracks (collectJobs) or when it needs every job to be done
-// (waitJobs), e.g. before writing an M3U playlist or the summary.
+// order the jobs were queued (so counters, AddedTracks, M3U order and output
+// stay in sequence), between tracks (collectJobs) or while waiting for all of
+// them (waitJobs), e.g. before writing an M3U playlist or the summary.
 
-// bgWorkers is how many tracks are post-processed at the same time. One job
-// takes longer than one download on fast connections (convert alone ~2 s), so
-// one worker would fall behind; two keep up.
-const bgWorkers = 2
+const (
+	// postWorkers is how many tracks are post-processed at the same time when
+	// downloads run one after another. One job can take longer than one
+	// download on a fast connection (convert alone ~2 s); two keep up.
+	postWorkers = 2
+	// maxConverts limits concurrent ffmpeg processes (each uses a full core).
+	maxConverts = 2
+)
 
 // trackJob is one track's background work. It holds copies of everything it
 // needs; track is only read, and the main goroutine no longer changes it.
 type trackJob struct {
 	seq int
 
+	// download: fetch the track first (parallel downloads only).
+	download    bool
+	aacLC       bool   // download through the lite-server aac-lc path
+	lyrics      bool   // fetch lyrics alongside the download
+	lrcFilename string // where to save lyrics when lyrics.save-file is on
+
 	// Post-processing of a fresh download (post == false: convert only, for an
 	// existing .m4a left over from an interrupted run).
 	post          bool
 	track         *model.Track
 	lrc           string
-	partPath      string // where the download was written
+	partPath      string // where the download is written
 	finalPath     string // the .m4a name once tagged
 	coverToRemove string // per-track playlist cover, deleted after tagging
 
@@ -61,43 +78,72 @@ type trackResult struct {
 	path    string // the track's final file (converted one if converted)
 	output  string
 	stages  []stageTime
+	bytes   int64 // downloaded bytes (download jobs)
 }
 
 type bgWorker struct {
-	jobs     chan trackJob
-	pending  sync.WaitGroup
-	mu       sync.Mutex
-	done     map[int]trackResult
+	jobs      chan trackJob
+	downloads chan struct{} // semaphore: concurrent downloads
+	converts  chan struct{} // semaphore: concurrent ffmpeg processes
+	notify    chan struct{} // a job finished
+
+	mu      sync.Mutex
+	done    map[int]trackResult
+	pending int // queued and not yet applied
+
 	nextSeq  int             // next job to queue; main goroutine only
 	applySeq int             // next job to apply; main goroutine only
 	inflight map[string]bool // finalPath of queued jobs; main goroutine only
 }
 
+// parallelDownloads is how many tracks download at the same time.
+func (r *Runner) parallelDownloads() int {
+	if n := r.Config.General.ParallelDownloads; n > 1 {
+		return n
+	}
+	return 1
+}
+
 // queueJob hands a job to the background workers, starting them on first use.
 func (r *Runner) queueJob(job trackJob) {
 	if r.bg == nil {
+		n := r.parallelDownloads()
+		workers := postWorkers
+		if n > 1 {
+			// Enough workers for n downloads plus the tracks being processed.
+			workers = n + maxConverts
+		}
 		w := &bgWorker{
-			jobs:     make(chan trackJob, 256),
-			done:     make(map[int]trackResult),
-			inflight: make(map[string]bool),
+			jobs:      make(chan trackJob, 4096),
+			downloads: make(chan struct{}, n),
+			converts:  make(chan struct{}, maxConverts),
+			notify:    make(chan struct{}, 1),
+			done:      make(map[int]trackResult),
+			inflight:  make(map[string]bool),
 		}
 		r.bg = w
-		for i := 0; i < bgWorkers; i++ {
+		for i := 0; i < workers; i++ {
 			go func() {
 				for job := range w.jobs {
 					res := r.runJob(job)
 					w.mu.Lock()
 					w.done[job.seq] = res
 					w.mu.Unlock()
-					w.pending.Done()
+					select {
+					case w.notify <- struct{}{}:
+					default:
+					}
 				}
 			}()
 		}
 	}
+	r.startTimingsClock()
 	job.seq = r.bg.nextSeq
 	r.bg.nextSeq++
 	r.bg.inflight[job.finalPath] = true
-	r.bg.pending.Add(1)
+	r.bg.mu.Lock()
+	r.bg.pending++
+	r.bg.mu.Unlock()
 	r.bg.jobs <- job
 }
 
@@ -127,6 +173,74 @@ func (r *Runner) runJob(job trackJob) trackResult {
 		res.counter = counter
 		res.output = out.String()
 		return res
+	}
+
+	if job.download {
+		var lyricsCh chan lyricsResult
+		if job.lyrics {
+			lyricsCh = make(chan lyricsResult, 1)
+			go func() {
+				lrc, err := lyrics.Get(job.track.ID, r.Config.Metadata.Lyrics.Type, r.Config.General.Language, r.Config.Metadata.Lyrics.Format, r.Config.General.LiteServer, r.Config.Metadata.Lyrics.Extra)
+				lyricsCh <- lyricsResult{lrc: lrc, err: err}
+			}()
+		}
+
+		r.bg.downloads <- struct{}{}
+		last = time.Now() // don't count the wait for a download slot
+		req := downloadRequest{AdamID: job.track.ID, Out: job.partPath}
+		var err error
+		if job.aacLC {
+			req.Mode = "aac-lc"
+		} else {
+			req.Mode = "fairplay"
+			req.URL, _, err = r.extractMedia(job.track.M3u8, false)
+			if err != nil {
+				<-r.bg.downloads
+				if lyricsCh != nil {
+					<-lyricsCh
+				}
+				return fail("unavailable", "⚠ Failed to extract info from manifest: %v", err)
+			}
+		}
+		if err == nil {
+			err = downloadTrack(r, req)
+		}
+		<-r.bg.downloads
+		if err != nil {
+			if lyricsCh != nil {
+				<-lyricsCh
+			}
+			if errors.Is(err, errUnavailable) {
+				return fail("unavailable", "Failed to download: Unavailable")
+			}
+			return fail("error", "Failed to download: %v", err)
+		}
+		mark("download")
+		if fi, err := os.Stat(job.partPath); err == nil {
+			res.bytes = fi.Size()
+			d := res.stages[len(res.stages)-1].d
+			fmt.Fprintf(&out, "Downloaded %s\n", speed(res.bytes, d))
+		}
+
+		if lyricsCh != nil {
+			lr := <-lyricsCh
+			switch {
+			case errors.Is(lr.err, lyrics.ErrLyricsNotFound):
+				fmt.Fprintln(&out, "No lyrics available for this song")
+			case lr.err != nil:
+				fmt.Fprintln(&out, lr.err)
+			case lr.lrc != "":
+				if r.Config.Metadata.Lyrics.SaveFile {
+					if err := r.writeLyrics(job.track.SaveDir, job.lrcFilename, lr.lrc); err != nil {
+						fmt.Fprintln(&out, "Failed to write lyrics")
+					}
+				}
+				if r.Config.Metadata.Lyrics.Embed {
+					job.lrc = lr.lrc
+				}
+			}
+			mark("lyrics")
+		}
 	}
 
 	if job.post {
@@ -173,9 +287,12 @@ func (r *Runner) runJob(job trackJob) trackResult {
 	}
 
 	if job.convert {
+		r.bg.converts <- struct{}{}
+		last = time.Now() // don't count the wait for an ffmpeg slot
 		if outPath, ok := r.runConvert(job.convertJob, &out); ok {
 			res.path = outPath
 		}
+		<-r.bg.converts
 		mark("convert")
 	}
 	res.output = out.String()
@@ -197,6 +314,7 @@ func (r *Runner) collectJobs() {
 		}
 		delete(r.bg.done, r.bg.applySeq)
 		r.bg.applySeq++
+		r.bg.pending--
 		ready = append(ready, res)
 	}
 	r.bg.mu.Unlock()
@@ -214,6 +332,7 @@ func (r *Runner) applyJob(res trackResult) {
 	for _, s := range res.stages {
 		r.addBackgroundTiming(s.name, s.d)
 	}
+	r.addBackgroundBytes(res.bytes)
 	switch res.counter {
 	case "error":
 		r.State.Counter.Error++
@@ -231,13 +350,22 @@ func (r *Runner) applyJob(res trackResult) {
 	r.State.AddedTracks = append(r.State.AddedTracks, added)
 }
 
-// waitJobs blocks until every queued job is done, then applies them all.
+// waitJobs blocks until every queued job is done, applying (and printing)
+// each one as soon as it and all jobs before it have finished.
 func (r *Runner) waitJobs() {
 	if r.bg == nil {
 		return
 	}
 	start := time.Now()
-	r.bg.pending.Wait()
-	r.collectJobs()
+	for {
+		r.collectJobs()
+		r.bg.mu.Lock()
+		left := r.bg.pending
+		r.bg.mu.Unlock()
+		if left == 0 {
+			break
+		}
+		<-r.bg.notify
+	}
 	r.addWaitTiming(time.Since(start))
 }
