@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"amdl/internal/model"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -89,26 +88,16 @@ func mp3TagArgs() []string {
 
 // convertJob is one prepared ffmpeg conversion. It holds copies of everything
 // it needs, so it can run on a background goroutine without touching the track.
+//
+// ffmpeg writes to tmpPath (".part.<format>"), which is renamed to outPath
+// once it is complete, so an interrupted conversion is never mistaken for a
+// finished one.
 type convertJob struct {
 	srcPath   string
 	outPath   string
+	tmpPath   string
 	targetFmt string
 	args      []string
-	// addedIdx is the track's index in State.AddedTracks, whose Path is
-	// updated once the conversion is done; -1 when there is none.
-	addedIdx int
-}
-
-// convertIfNeeded converts the track right away (in the foreground).
-func (r *Runner) convertIfNeeded(track *model.Track) {
-	job, ok := r.prepareConvert(track.SavePath, track.Codec)
-	if !ok {
-		return
-	}
-	if outPath, ok := r.runConvert(job, os.Stdout); ok {
-		track.SavePath = outPath
-		track.SaveName = filepath.Base(outPath)
-	}
 }
 
 // prepareConvert runs the quick checks (enabled, format, lossy source, ffmpeg
@@ -142,6 +131,7 @@ func (r *Runner) prepareConvert(srcPath, codec string) (convertJob, bool) {
 
 	outBase := strings.TrimSuffix(srcPath, ext)
 	outPath := outBase + "." + targetFmt
+	tmpPath := outBase + ".part." + targetFmt
 
 	// Handle lossy -> lossless cases: optionally skip or warn
 	if (targetFmt == "flac" || targetFmt == "wav") && r.isLossySource(ext, codec) {
@@ -159,19 +149,19 @@ func (r *Runner) prepareConvert(srcPath, codec string) (convertJob, bool) {
 		return convertJob{}, false
 	}
 
-	args, err := r.buildFFmpegArgs(r.Config.Convert.FFmpegPath, srcPath, outPath, targetFmt, r.Config.Convert.ExtraArgs)
+	args, err := r.buildFFmpegArgs(r.Config.Convert.FFmpegPath, srcPath, tmpPath, targetFmt, r.Config.Convert.ExtraArgs)
 	if err != nil {
 		fmt.Println("Conversion config error:", err)
 		return convertJob{}, false
 	}
-	return convertJob{srcPath: srcPath, outPath: outPath, targetFmt: targetFmt, args: args, addedIdx: -1}, true
+	return convertJob{srcPath: srcPath, outPath: outPath, tmpPath: tmpPath, targetFmt: targetFmt, args: args}, true
 }
 
 // runConvert runs ffmpeg for a prepared job and writes its messages to w.
 // It only reads r.Config, so it is safe to call from a background goroutine.
 // It returns the path of the converted file and whether conversion succeeded.
 func (r *Runner) runConvert(job convertJob, w io.Writer) (string, bool) {
-	srcPath, outPath, targetFmt := job.srcPath, job.outPath, job.targetFmt
+	srcPath, outPath, tmpPath, targetFmt := job.srcPath, job.outPath, job.tmpPath, job.targetFmt
 	fmt.Fprintf(w, "Converting -> %s ...\n", targetFmt)
 	cmd := exec.Command(r.Config.Convert.FFmpegPath, job.args...)
 	var stderr bytes.Buffer
@@ -185,14 +175,19 @@ func (r *Runner) runConvert(job convertJob, w io.Writer) (string, bool) {
 	if err := cmd.Run(); err != nil {
 		fmt.Fprintln(w, "Conversion failed:", err)
 		// leave original
+		os.Remove(tmpPath)
 		return "", false
 	}
 	if r.Config.Convert.CheckBadALAC && stderr.Len() > 0 {
 		fmt.Fprint(w, "Detected ALAC Error.", "\n")
-		if r.Config.Convert.DeleteBadALAC {
-			delPath := strings.TrimSuffix(srcPath, "m4a") + targetFmt
+		if !r.Config.Convert.DeleteBadALAC {
+			// Keep the converted file next to the original, as before.
+			if err := os.Rename(tmpPath, outPath); err != nil {
+				fmt.Fprintln(w, "Failed to rename converted file:", err)
+			}
+		} else {
 			logPath := strings.TrimSuffix(srcPath, "m4a") + "log"
-			if err := os.Remove(delPath); err != nil {
+			if err := os.Remove(tmpPath); err != nil {
 				fmt.Fprintln(w, "Failed to remove convert:", err)
 			} else {
 				fmt.Fprintln(w, "Convert removed due to the bad ALAC.")
@@ -205,6 +200,11 @@ func (r *Runner) runConvert(job convertJob, w io.Writer) (string, bool) {
 				}
 			}
 		}
+		return "", false
+	}
+	if err := os.Rename(tmpPath, outPath); err != nil {
+		fmt.Fprintln(w, "Conversion failed: rename:", err)
+		os.Remove(tmpPath)
 		return "", false
 	}
 	fmt.Fprintf(w, "Conversion completed in %s: %s\n", time.Since(start).Truncate(time.Millisecond), filepath.Base(outPath))

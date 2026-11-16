@@ -264,7 +264,7 @@ func Main() {
 				fmt.Println("Invalid type")
 			}
 		}
-		r.waitConversions()
+		r.waitJobs()
 		fmt.Printf("=======  [\u2714 ] Completed: %d/%d  |  [\u26A0 ] Warnings: %d  |  [\u2716 ] Errors: %d  =======\n", r.State.Counter.Success, r.State.Counter.Total, r.State.Counter.Unavailable+r.State.Counter.NotSong, r.State.Counter.Error)
 		if r.State.Counter.Error == 0 {
 			break

@@ -186,7 +186,8 @@ func firstGenre(genres []string) string {
 	return genres[0]
 }
 
-func (r *Runner) writeMP4Tags(track *model.Track, lrc string) error {
+// writeMP4Tags writes the track's tags, lyrics and cover into the file at path.
+func (r *Runner) writeMP4Tags(track *model.Track, path string, lrc string) error {
 	t := &mp4tag.MP4Tags{
 		Title:  track.Resp.Attributes.Name,
 		Artist: track.Resp.Attributes.ArtistName,
@@ -285,7 +286,7 @@ func (r *Runner) writeMP4Tags(track *model.Track, lrc string) error {
 		t.ItunesAdvisory = mp4tag.ItunesAdvisoryNone
 	}
 
-	mp4, err := mp4tag.Open(track.SavePath)
+	mp4, err := mp4tag.Open(path)
 	if err != nil {
 		return err
 	}

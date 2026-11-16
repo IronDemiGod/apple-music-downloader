@@ -3,7 +3,6 @@ package app
 import (
 	"amdl/internal/amp-api"
 	fairplayrip "amdl/internal/fairplay-rip"
-	"amdl/internal/media/alacfix"
 	defrag "amdl/internal/media/defrag"
 	"amdl/internal/media/lyrics"
 	"amdl/internal/model"
@@ -25,7 +24,7 @@ type lyricsResult struct {
 
 func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken string) {
 	var err error
-	r.collectConversions()
+	r.collectJobs()
 	r.State.Counter.Total++
 	fmt.Printf("Track %d of %d: %s\n", track.TaskNum, track.TaskTotal, track.Type)
 
@@ -124,6 +123,9 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 	filename := fmt.Sprintf("%s.m4a", forbiddenNames.ReplaceAllString(songName, "_"))
 	track.SaveName = filename
 	trackPath := filepath.Join(track.SaveDir, track.SaveName)
+	// The download goes to a temporary name and is renamed to trackPath once
+	// it is fully processed (see bgwork.go).
+	partPath := strings.TrimSuffix(trackPath, filepath.Ext(trackPath)) + ".part" + filepath.Ext(trackPath)
 	lrcFilename := fmt.Sprintf("%s.%s", forbiddenNames.ReplaceAllString(songName, "_"), r.Config.Metadata.Lyrics.Format)
 
 	// Determine possible post-conversion target file (so we can skip re-download)
@@ -136,6 +138,31 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 		convertedPath = strings.TrimSuffix(trackPath, filepath.Ext(trackPath)) + "." + strings.ToLower(r.Config.Convert.Format)
 		considerConverted = true
 	}
+	tArtistId := ""
+	if len(track.Resp.Relationships.Artists.Data) > 0 {
+		tArtistId = track.Resp.Relationships.Artists.Data[0].ID
+	}
+	added := AddedTrack{
+		Path:     trackPath,
+		Artist:   track.Resp.Attributes.ArtistName,
+		ArtistID: tArtistId,
+		Album:    track.Resp.Attributes.AlbumName,
+		Song:     track.Resp.Attributes.Name,
+	}
+
+	// The same song is still being processed in the background (e.g. it is in
+	// a playlist twice): count it as done, like an existing file.
+	if r.isInflight(trackPath) {
+		fmt.Println("Track is already being processed.")
+		r.State.Counter.Success++
+		r.State.OKDict[track.PreID] = append(r.State.OKDict[track.PreID], track.TaskNum)
+		if considerConverted {
+			added.Path = convertedPath
+		}
+		r.State.AddedTracks = append(r.State.AddedTracks, added)
+		return
+	}
+
 	// Existence check now considers converted output (if original was deleted)
 	existsOriginal, err := fileExists(trackPath)
 	if err != nil {
@@ -148,28 +175,17 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 
 		// An .m4a without its converted file is left over from a run that was
 		// stopped before its background conversion finished: convert it now.
+		// The job adds the track to AddedTracks (with the converted path).
 		if considerConverted {
 			if done, _ := fileExists(convertedPath); !done {
-				if job, ok := r.prepareConvert(trackPath, track.Codec); ok {
-					job.addedIdx = len(r.State.AddedTracks)
-					if r.queueConvert(job) {
-						fmt.Println("Not converted yet: conversion queued (runs in the background).")
-					}
+				if cj, ok := r.prepareConvert(trackPath, track.Codec); ok {
+					r.queueJob(trackJob{finalPath: trackPath, convert: true, convertJob: cj, added: added})
+					fmt.Println("Not converted yet: conversion queued (runs in the background).")
+					return
 				}
 			}
 		}
-
-		tArtistId := ""
-		if len(track.Resp.Relationships.Artists.Data) > 0 {
-			tArtistId = track.Resp.Relationships.Artists.Data[0].ID
-		}
-		r.State.AddedTracks = append(r.State.AddedTracks, AddedTrack{
-			Path:     trackPath,
-			Artist:   track.Resp.Attributes.ArtistName,
-			ArtistID: tArtistId,
-			Album:    track.Resp.Attributes.AlbumName,
-			Song:     track.Resp.Attributes.Name,
-		})
+		r.State.AddedTracks = append(r.State.AddedTracks, added)
 		return
 	}
 	if considerConverted {
@@ -178,18 +194,8 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 			fmt.Println("Converted track already exists locally.")
 			r.State.Counter.Success++
 			r.State.OKDict[track.PreID] = append(r.State.OKDict[track.PreID], track.TaskNum)
-
-			tArtistId := ""
-			if len(track.Resp.Relationships.Artists.Data) > 0 {
-				tArtistId = track.Resp.Relationships.Artists.Data[0].ID
-			}
-			r.State.AddedTracks = append(r.State.AddedTracks, AddedTrack{
-				Path:     convertedPath,
-				Artist:   track.Resp.Attributes.ArtistName,
-				ArtistID: tArtistId,
-				Album:    track.Resp.Attributes.AlbumName,
-				Song:     track.Resp.Attributes.Name,
-			})
+			added.Path = convertedPath
+			r.State.AddedTracks = append(r.State.AddedTracks, added)
 			return
 		}
 	}
@@ -247,8 +253,9 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 			r.State.Counter.Error++
 			return
 		}
-		err := runv5.DownloadSong(context.Background(), track.ID, trackPath, r.Config.General.LiteServer)
+		err := runv5.DownloadSong(context.Background(), track.ID, partPath, r.Config.General.LiteServer)
 		if err != nil {
+			os.Remove(partPath)
 			fmt.Println("Failed to dl aac-lc via lite-server:", err)
 			if err.Error() == "Unavailable" {
 				r.State.Counter.Unavailable++
@@ -266,8 +273,9 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 		}
 		//边下载边解密
 		//wrapper-lite 模板解密
-		err = fairplayrip.Run(track.ID, trackM3u8Url, trackPath, r.Config)
+		err = fairplayrip.Run(track.ID, trackM3u8Url, partPath, r.Config)
 		if err != nil {
+			os.Remove(partPath)
 			fmt.Println("Failed to run v4:", err)
 			r.State.Counter.Error++
 			return
@@ -278,79 +286,43 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 	collectLyrics()
 	timer.mark("lyrics")
 
-	// 将 fMP4 解碎片为普通 MP4；元数据和封面统一交给后续 writeMP4Tags 写入。
-	removeCoverAfterWrite := false
+	// Per-track playlist cover: fetched here (network), embedded and deleted by
+	// the background job.
+	coverToRemove := ""
 	if r.Config.Metadata.Artwork.Embed {
 		if (strings.Contains(track.PreID, "pl.") || strings.Contains(track.PreID, "ra.")) && r.Config.Metadata.Artwork.DlForPlaylist {
 			track.CoverPath, err = r.writeCover(track.SaveDir, track.ID, track.Resp.Attributes.Artwork.URL)
 			if err != nil {
 				fmt.Println("Failed to write cover.")
 			} else {
-				removeCoverAfterWrite = true
+				coverToRemove = track.CoverPath
 			}
 			timer.mark("cover")
 		}
 	}
-
-	if err := defrag.DefragmentMP4(trackPath); err != nil {
-		fmt.Printf("Defragment failed: %v\n", err)
-		r.State.Counter.Error++
-		return
-	}
-	timer.mark("defrag")
 	track.SavePath = trackPath
 
-	if r.Config.Media.ALACFix {
-		err = alacfix.Run(track.SavePath, false)
-		if err != nil {
-			fmt.Println("\u26A0 Failed to fix ALAC:", err)
-			r.State.Counter.Unavailable++
-			return
-		}
-		timer.mark("alac-fix")
+	// Defrag (fMP4 -> plain MP4), alac-fix, tags, rename to trackPath and the
+	// optional conversion run in the background while the next track
+	// downloads. The job counts the track and adds it to AddedTracks.
+	job := trackJob{
+		post:          true,
+		track:         track,
+		lrc:           lrc,
+		partPath:      partPath,
+		finalPath:     trackPath,
+		coverToRemove: coverToRemove,
+		preID:         track.PreID,
+		taskNum:       track.TaskNum,
+		added:         added,
 	}
-
-	err = r.writeMP4Tags(track, lrc)
-	if err != nil {
-		fmt.Println("\u26A0 Failed to write tags in media:", err)
-		r.State.Counter.Unavailable++
-		return
+	if cj, ok := r.prepareConvert(trackPath, track.Codec); ok {
+		job.convert = true
+		job.convertJob = cj
 	}
-	if removeCoverAfterWrite {
-		if err := os.Remove(track.CoverPath); err != nil {
-			fmt.Printf("Error deleting file: %s\n", track.CoverPath)
-			r.State.Counter.Error++
-			return
-		}
-	}
-
-	timer.mark("tags")
-
-	// CONVERSION FEATURE hook: ffmpeg runs in the background while the next
-	// track downloads. AddedTracks gets the .m4a path now and the converted
-	// path once the conversion is collected.
-	if job, ok := r.prepareConvert(track.SavePath, track.Codec); ok {
-		job.addedIdx = len(r.State.AddedTracks)
-		if r.queueConvert(job) {
-			fmt.Println("Conversion queued (runs in the background).")
-		}
-	}
+	r.queueJob(job)
+	fmt.Println("Downloaded; processing in the background.")
 	r.finishStageTimer(timer)
-
-	tArtistId := ""
-	if len(track.Resp.Relationships.Artists.Data) > 0 {
-		tArtistId = track.Resp.Relationships.Artists.Data[0].ID
-	}
-	r.State.AddedTracks = append(r.State.AddedTracks, AddedTrack{
-		Path:     track.SavePath,
-		Artist:   track.Resp.Attributes.ArtistName,
-		ArtistID: tArtistId,
-		Album:    track.Resp.Attributes.AlbumName,
-		Song:     track.Resp.Attributes.Name,
-	})
-
-	r.State.Counter.Success++
-	r.State.OKDict[track.PreID] = append(r.State.OKDict[track.PreID], track.TaskNum)
 }
 
 func releaseYear(date string) string {
