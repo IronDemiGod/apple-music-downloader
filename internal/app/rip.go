@@ -283,6 +283,9 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 
 	}
 	timer.mark("download")
+	if fi, err := os.Stat(partPath); err == nil {
+		timer.setBytes(fi.Size())
+	}
 	collectLyrics()
 	timer.mark("lyrics")
 

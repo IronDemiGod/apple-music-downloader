@@ -16,6 +16,7 @@ type stageTimer struct {
 	start  time.Time
 	last   time.Time
 	stages []stageTime
+	bytes  int64 // size of the downloaded file, for the download speed
 }
 
 type stageTime struct {
@@ -30,6 +31,7 @@ type Timings struct {
 	tracks int
 	total  time.Duration
 	start  time.Time // when the first timed track started (for wall time)
+	bytes  int64     // downloaded bytes over all timed tracks
 
 	// Work done on the background converter, overlapping the stages above,
 	// and how long the main goroutine waited for it.
@@ -76,6 +78,34 @@ func (r *Runner) addWaitTiming(d time.Duration) {
 	r.State.Timings.wait += d
 }
 
+// setBytes records how many bytes the track's download produced.
+func (t *stageTimer) setBytes(n int64) {
+	if t == nil {
+		return
+	}
+	t.bytes = n
+}
+
+// speed formats n bytes transferred in d as MB and MB/s plus Mbit/s.
+func speed(n int64, d time.Duration) string {
+	if n <= 0 || d <= 0 {
+		return ""
+	}
+	mb := float64(n) / 1e6
+	mbps := mb / d.Seconds()
+	return fmt.Sprintf("%.1f MB at %.1f MB/s = %.0f Mbit/s", mb, mbps, mbps*8)
+}
+
+// stageDur returns the duration of the named stage, or 0.
+func (t *stageTimer) stageDur(name string) time.Duration {
+	for _, s := range t.stages {
+		if s.name == name {
+			return s.d
+		}
+	}
+	return 0
+}
+
 // mark ends the current stage under the given name and starts the next one.
 func (t *stageTimer) mark(name string) {
 	if t == nil {
@@ -97,6 +127,9 @@ func (r *Runner) finishStageTimer(t *stageTimer) {
 		parts = append(parts, fmt.Sprintf("%s %s", s.name, fmtDur(s.d)))
 	}
 	parts = append(parts, "total "+fmtDur(total))
+	if sp := speed(t.bytes, t.stageDur("download")); sp != "" {
+		parts = append(parts, sp)
+	}
 	fmt.Println("\u23F1 " + strings.Join(parts, " | "))
 
 	tm := &r.State.Timings
@@ -111,6 +144,7 @@ func (r *Runner) finishStageTimer(t *stageTimer) {
 	}
 	tm.tracks++
 	tm.total += total
+	tm.bytes += t.bytes
 }
 
 // printTimingsSummary prints each stage's share of the run's timed tracks.
@@ -127,6 +161,9 @@ func (r *Runner) printTimingsSummary() {
 			pct = 100 * float64(d) / float64(tm.total)
 		}
 		fmt.Printf("   %-10s %9s  %5.1f%%  (avg %s)\n", name, fmtDur(d), pct, fmtDur(d/time.Duration(tm.tracks)))
+	}
+	if sp := speed(tm.bytes, tm.totals["download"]); sp != "" {
+		fmt.Printf("   downloaded %s (average while downloading)\n", sp)
 	}
 	if len(tm.bgOrder) > 0 {
 		fmt.Println("   in the background, overlapping the stages above:")

@@ -25,8 +25,12 @@ func TestStageTimerTotals(t *testing.T) {
 		timer := r.newStageTimer()
 		time.Sleep(2 * time.Millisecond)
 		timer.mark("download")
+		timer.setBytes(1_000_000)
 		timer.mark("tags")
 		r.finishStageTimer(timer)
+	}
+	if r.State.Timings.bytes != 2_000_000 {
+		t.Fatalf("bytes = %d, want 2000000", r.State.Timings.bytes)
 	}
 	tm := r.State.Timings
 	if tm.tracks != 2 {
@@ -42,4 +46,13 @@ func TestStageTimerTotals(t *testing.T) {
 		t.Fatalf("stages sum %v != total %v", sum, tm.total)
 	}
 	r.printTimingsSummary()
+}
+
+func TestSpeed(t *testing.T) {
+	if got, want := speed(50_000_000, 2*time.Second), "50.0 MB at 25.0 MB/s = 200 Mbit/s"; got != want {
+		t.Errorf("speed = %q, want %q", got, want)
+	}
+	if speed(0, time.Second) != "" || speed(1, 0) != "" {
+		t.Error("speed must be empty without bytes or time")
+	}
 }
