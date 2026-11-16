@@ -189,6 +189,8 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 		}
 	}
 
+	timer := r.newStageTimer()
+
 	// Fetch lyrics concurrently with the audio download; the result (and any
 	// message) is handled once the download is done, or on early return.
 	var lrc string
@@ -258,7 +260,9 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 		}
 
 	}
+	timer.mark("download")
 	collectLyrics()
+	timer.mark("lyrics")
 
 	// 将 fMP4 解碎片为普通 MP4；元数据和封面统一交给后续 writeMP4Tags 写入。
 	removeCoverAfterWrite := false
@@ -270,6 +274,7 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 			} else {
 				removeCoverAfterWrite = true
 			}
+			timer.mark("cover")
 		}
 	}
 
@@ -278,6 +283,7 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 		r.State.Counter.Error++
 		return
 	}
+	timer.mark("defrag")
 	track.SavePath = trackPath
 
 	if r.Config.Media.ALACFix {
@@ -287,6 +293,7 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 			r.State.Counter.Unavailable++
 			return
 		}
+		timer.mark("alac-fix")
 	}
 
 	err = r.writeMP4Tags(track, lrc)
@@ -303,8 +310,14 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 		}
 	}
 
+	timer.mark("tags")
+
 	// CONVERSION FEATURE hook
 	r.convertIfNeeded(track)
+	if r.Config.Convert.AfterDownload {
+		timer.mark("convert")
+	}
+	r.finishStageTimer(timer)
 
 	tArtistId := ""
 	if len(track.Resp.Relationships.Artists.Data) > 0 {

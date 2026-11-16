@@ -25,12 +25,14 @@ type Flags struct {
 	Yes            bool
 	ForceUpdate    bool
 	MigrateConfig  bool
+	Timings        bool
 }
 
 type State struct {
 	Counter     Counter
 	OKDict      map[string][]int
 	AddedTracks []AddedTrack
+	Timings     Timings
 }
 
 type Runner struct {
