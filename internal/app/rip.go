@@ -25,6 +25,7 @@ type lyricsResult struct {
 
 func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken string) {
 	var err error
+	r.collectConversions()
 	r.State.Counter.Total++
 	fmt.Printf("Track %d of %d: %s\n", track.TaskNum, track.TaskTotal, track.Type)
 
@@ -144,6 +145,19 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 		fmt.Println("Track already exists locally.")
 		r.State.Counter.Success++
 		r.State.OKDict[track.PreID] = append(r.State.OKDict[track.PreID], track.TaskNum)
+
+		// An .m4a without its converted file is left over from a run that was
+		// stopped before its background conversion finished: convert it now.
+		if considerConverted {
+			if done, _ := fileExists(convertedPath); !done {
+				if job, ok := r.prepareConvert(trackPath, track.Codec); ok {
+					job.addedIdx = len(r.State.AddedTracks)
+					if r.queueConvert(job) {
+						fmt.Println("Not converted yet: conversion queued (runs in the background).")
+					}
+				}
+			}
+		}
 
 		tArtistId := ""
 		if len(track.Resp.Relationships.Artists.Data) > 0 {
@@ -312,10 +326,14 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 
 	timer.mark("tags")
 
-	// CONVERSION FEATURE hook
-	r.convertIfNeeded(track)
-	if r.Config.Convert.AfterDownload {
-		timer.mark("convert")
+	// CONVERSION FEATURE hook: ffmpeg runs in the background while the next
+	// track downloads. AddedTracks gets the .m4a path now and the converted
+	// path once the conversion is collected.
+	if job, ok := r.prepareConvert(track.SavePath, track.Codec); ok {
+		job.addedIdx = len(r.State.AddedTracks)
+		if r.queueConvert(job) {
+			fmt.Println("Conversion queued (runs in the background).")
+		}
 	}
 	r.finishStageTimer(timer)
 

@@ -39,6 +39,7 @@ type Runner struct {
 	Config config.ConfigSet
 	Flags  Flags
 	State  State
+	conv   *bgConverter // background ffmpeg worker, started on first use
 }
 
 func NewRunner(cfg config.ConfigSet) *Runner {

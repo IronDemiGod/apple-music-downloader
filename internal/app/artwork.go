@@ -77,6 +77,8 @@ func (r *Runner) saveM3UPlaylist(dir string, name string, startIdx int) {
 	if !r.Flags.SaveM3U8 {
 		return
 	}
+	// The playlist must list the converted files, so finish conversions first.
+	r.waitConversions()
 	if len(r.State.AddedTracks) > startIdx {
 		if err := r.writeM3UPlaylist(dir, name, r.State.AddedTracks[startIdx:]); err != nil {
 			fmt.Printf("Failed to write M3U8 playlist: %v\n", err)

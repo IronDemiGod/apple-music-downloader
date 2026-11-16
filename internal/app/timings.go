@@ -29,6 +29,14 @@ type Timings struct {
 	totals map[string]time.Duration
 	tracks int
 	total  time.Duration
+	start  time.Time // when the first timed track started (for wall time)
+
+	// Work done on the background converter, overlapping the stages above,
+	// and how long the main goroutine waited for it.
+	bgOrder  []string
+	bgTotals map[string]time.Duration
+	bgCount  map[string]int
+	wait     time.Duration
 }
 
 // newStageTimer starts timing a track, or returns nil when --timings is off.
@@ -37,7 +45,35 @@ func (r *Runner) newStageTimer() *stageTimer {
 		return nil
 	}
 	now := time.Now()
+	if r.State.Timings.start.IsZero() {
+		r.State.Timings.start = now
+	}
 	return &stageTimer{start: now, last: now}
+}
+
+// addBackgroundTiming records work done on the background converter.
+func (r *Runner) addBackgroundTiming(name string, d time.Duration) {
+	if !r.Flags.Timings {
+		return
+	}
+	tm := &r.State.Timings
+	if tm.bgTotals == nil {
+		tm.bgTotals = make(map[string]time.Duration)
+		tm.bgCount = make(map[string]int)
+	}
+	if _, ok := tm.bgTotals[name]; !ok {
+		tm.bgOrder = append(tm.bgOrder, name)
+	}
+	tm.bgTotals[name] += d
+	tm.bgCount[name]++
+}
+
+// addWaitTiming records time spent waiting for background work to finish.
+func (r *Runner) addWaitTiming(d time.Duration) {
+	if !r.Flags.Timings {
+		return
+	}
+	r.State.Timings.wait += d
 }
 
 // mark ends the current stage under the given name and starts the next one.
@@ -91,6 +127,17 @@ func (r *Runner) printTimingsSummary() {
 			pct = 100 * float64(d) / float64(tm.total)
 		}
 		fmt.Printf("   %-10s %9s  %5.1f%%  (avg %s)\n", name, fmtDur(d), pct, fmtDur(d/time.Duration(tm.tracks)))
+	}
+	if len(tm.bgOrder) > 0 {
+		fmt.Println("   in the background, overlapping the stages above:")
+		for _, name := range tm.bgOrder {
+			d := tm.bgTotals[name]
+			fmt.Printf("   %-10s %9s  (%d file(s), avg %s)\n", name, fmtDur(d), tm.bgCount[name], fmtDur(d/time.Duration(tm.bgCount[name])))
+		}
+		fmt.Printf("   waited for the background work: %s\n", fmtDur(tm.wait))
+	}
+	if !tm.start.IsZero() {
+		fmt.Printf("   wall time: %s\n", fmtDur(time.Since(tm.start)))
 	}
 }
 

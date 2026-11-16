@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"amdl/internal/model"
 	"os"
 	"os/exec"
@@ -86,16 +87,42 @@ func mp3TagArgs() []string {
 
 // CONVERSION FEATURE: Perform conversion if enabled.
 
+// convertJob is one prepared ffmpeg conversion. It holds copies of everything
+// it needs, so it can run on a background goroutine without touching the track.
+type convertJob struct {
+	srcPath   string
+	outPath   string
+	targetFmt string
+	args      []string
+	// addedIdx is the track's index in State.AddedTracks, whose Path is
+	// updated once the conversion is done; -1 when there is none.
+	addedIdx int
+}
+
+// convertIfNeeded converts the track right away (in the foreground).
 func (r *Runner) convertIfNeeded(track *model.Track) {
-	if !r.Config.Convert.AfterDownload {
+	job, ok := r.prepareConvert(track.SavePath, track.Codec)
+	if !ok {
 		return
+	}
+	if outPath, ok := r.runConvert(job, os.Stdout); ok {
+		track.SavePath = outPath
+		track.SaveName = filepath.Base(outPath)
+	}
+}
+
+// prepareConvert runs the quick checks (enabled, format, lossy source, ffmpeg
+// present) and builds the ffmpeg command. It prints its messages directly and
+// must be called on the main goroutine.
+func (r *Runner) prepareConvert(srcPath, codec string) (convertJob, bool) {
+	if !r.Config.Convert.AfterDownload {
+		return convertJob{}, false
 	}
 	if r.Config.Convert.Format == "" {
-		return
+		return convertJob{}, false
 	}
-	srcPath := track.SavePath
 	if srcPath == "" {
-		return
+		return convertJob{}, false
 	}
 	ext := strings.ToLower(filepath.Ext(srcPath))
 	targetFmt := strings.ToLower(r.Config.Convert.Format)
@@ -103,13 +130,13 @@ func (r *Runner) convertIfNeeded(track *model.Track) {
 	// Map extension for output
 	if targetFmt == "copy" {
 		fmt.Println("Convert (copy) requested; skipping because it produces no new format.")
-		return
+		return convertJob{}, false
 	}
 
 	if r.Config.Convert.SkipIfSourceMatch {
 		if ext == "."+targetFmt {
 			fmt.Printf("Conversion skipped (already %s)\n", targetFmt)
-			return
+			return convertJob{}, false
 		}
 	}
 
@@ -117,10 +144,10 @@ func (r *Runner) convertIfNeeded(track *model.Track) {
 	outPath := outBase + "." + targetFmt
 
 	// Handle lossy -> lossless cases: optionally skip or warn
-	if (targetFmt == "flac" || targetFmt == "wav") && r.isLossySource(ext, track.Codec) {
+	if (targetFmt == "flac" || targetFmt == "wav") && r.isLossySource(ext, codec) {
 		if r.Config.Convert.SkipLossyToLossless {
 			fmt.Println("Skipping conversion: source appears lossy and target is lossless; configured to skip.")
-			return
+			return convertJob{}, false
 		}
 		if r.Config.Convert.WarnLossyToLossless {
 			fmt.Println("Warning: Converting lossy source to lossless container will not improve quality.")
@@ -129,17 +156,24 @@ func (r *Runner) convertIfNeeded(track *model.Track) {
 
 	if _, err := exec.LookPath(r.Config.Convert.FFmpegPath); err != nil {
 		fmt.Printf("ffmpeg not found at '%s'; skipping conversion.\n", r.Config.Convert.FFmpegPath)
-		return
+		return convertJob{}, false
 	}
 
 	args, err := r.buildFFmpegArgs(r.Config.Convert.FFmpegPath, srcPath, outPath, targetFmt, r.Config.Convert.ExtraArgs)
 	if err != nil {
 		fmt.Println("Conversion config error:", err)
-		return
+		return convertJob{}, false
 	}
+	return convertJob{srcPath: srcPath, outPath: outPath, targetFmt: targetFmt, args: args, addedIdx: -1}, true
+}
 
-	fmt.Printf("Converting -> %s ...\n", targetFmt)
-	cmd := exec.Command(r.Config.Convert.FFmpegPath, args...)
+// runConvert runs ffmpeg for a prepared job and writes its messages to w.
+// It only reads r.Config, so it is safe to call from a background goroutine.
+// It returns the path of the converted file and whether conversion succeeded.
+func (r *Runner) runConvert(job convertJob, w io.Writer) (string, bool) {
+	srcPath, outPath, targetFmt := job.srcPath, job.outPath, job.targetFmt
+	fmt.Fprintf(w, "Converting -> %s ...\n", targetFmt)
+	cmd := exec.Command(r.Config.Convert.FFmpegPath, job.args...)
 	var stderr bytes.Buffer
 	if r.Config.Convert.CheckBadALAC {
 		cmd.Stderr = &stderr
@@ -149,41 +183,38 @@ func (r *Runner) convertIfNeeded(track *model.Track) {
 	cmd.Stdout = nil
 	start := time.Now()
 	if err := cmd.Run(); err != nil {
-		fmt.Println("Conversion failed:", err)
+		fmt.Fprintln(w, "Conversion failed:", err)
 		// leave original
-		return
+		return "", false
 	}
 	if r.Config.Convert.CheckBadALAC && stderr.Len() > 0 {
-		fmt.Print("Detected ALAC Error.", "\n")
+		fmt.Fprint(w, "Detected ALAC Error.", "\n")
 		if r.Config.Convert.DeleteBadALAC {
 			delPath := strings.TrimSuffix(srcPath, "m4a") + targetFmt
 			logPath := strings.TrimSuffix(srcPath, "m4a") + "log"
 			if err := os.Remove(delPath); err != nil {
-				fmt.Println("Failed to remove convert:", err)
+				fmt.Fprintln(w, "Failed to remove convert:", err)
 			} else {
-				fmt.Println("Convert removed due to the bad ALAC.")
+				fmt.Fprintln(w, "Convert removed due to the bad ALAC.")
 				log := stderr
 				err = os.WriteFile(logPath, log.Bytes(), 0644)
 				if err != nil {
-					fmt.Println("Convert logs:", log)
+					fmt.Fprintln(w, "Convert logs:", log.String())
 				} else {
-					fmt.Println("Convert logs are stored in:", logPath)
+					fmt.Fprintln(w, "Convert logs are stored in:", logPath)
 				}
 			}
 		}
-	} else {
-		fmt.Printf("Conversion completed in %s: %s\n", time.Since(start).Truncate(time.Millisecond), filepath.Base(outPath))
-
-		if !r.Config.Convert.KeepOriginal {
-			if err := os.Remove(srcPath); err != nil {
-				fmt.Println("Failed to remove original after conversion:", err)
-			} else {
-				fmt.Println("Original removed.")
-			}
-
-		}
-		track.SavePath = outPath
-		track.SaveName = filepath.Base(outPath)
+		return "", false
 	}
+	fmt.Fprintf(w, "Conversion completed in %s: %s\n", time.Since(start).Truncate(time.Millisecond), filepath.Base(outPath))
 
+	if !r.Config.Convert.KeepOriginal {
+		if err := os.Remove(srcPath); err != nil {
+			fmt.Fprintln(w, "Failed to remove original after conversion:", err)
+		} else {
+			fmt.Fprintln(w, "Original removed.")
+		}
+	}
+	return outPath, true
 }
