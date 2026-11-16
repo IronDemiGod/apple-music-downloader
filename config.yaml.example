@@ -47,6 +47,13 @@ paths:
   # instead of collecting the whole playlist in one folder
   playlist-album-folders: false
 
+  # Folder where tracks are downloaded and processed before the finished file is moved to
+  # the save folder above. "auto": RAM (/dev/shm/amdl) on Linux, the save folder elsewhere.
+  # "": always work in the save folder. Or a folder, e.g. on a fast SSD or a RAM disk
+  # ("R:/amdl"). Helps a lot when the save folder is slow (USB or network drive).
+  # A track uses the save folder instead when this folder is low on space.
+  work-dir: "auto"
+
   # Variables: {ArtistId}, {ArtistName}, {UrlArtistName}. Set to "" to disable artist sub-folder.
   artist-folder: "{UrlArtistName}"
 

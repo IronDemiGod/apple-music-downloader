@@ -53,6 +53,10 @@ type PathsConfig struct {
 	// folders, the way a single-song download does, instead of collecting the
 	// whole playlist in one folder named after it.
 	PlaylistAlbumFolders bool   `koanf:"playlist-album-folders"`
+	// WorkDir, when set, is where tracks are downloaded and processed (defrag,
+	// tags, conversion); only the finished file is moved to the save folder.
+	// A RAM disk such as /dev/shm/amdl avoids slow save folders entirely.
+	WorkDir string `koanf:"work-dir"`
 	ArtistFolder         string `koanf:"artist-folder"`
 	SongFile             string `koanf:"song-file"`
 	LimitMax             int    `koanf:"limit-max"`

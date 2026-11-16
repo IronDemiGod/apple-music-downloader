@@ -48,6 +48,10 @@ type Runner struct {
 	// sayItem is the live list entry of the track being prepared on the main
 	// goroutine; sayf/sayln send its messages there instead of the screen.
 	sayItem *liveItem
+
+	// This run's folder under paths.work-dir ("" until first used, or unused).
+	workRun       string
+	workRunFailed bool
 }
 
 // sayf prints a message about the current track, or, while the live list is

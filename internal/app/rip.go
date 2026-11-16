@@ -235,6 +235,15 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 		}
 	}
 
+	// With paths.work-dir, the track is downloaded and processed in a work
+	// folder (e.g. RAM); only the finished file goes to the save folder.
+	workDir := r.trackWorkDir(track.ID)
+	convertSrc := trackPath
+	if workDir != "" {
+		partPath = filepath.Join(workDir, filepath.Base(partPath))
+		convertSrc = filepath.Join(workDir, filepath.Base(trackPath))
+	}
+
 	// Parallel downloads: the download itself, the lyrics and all processing
 	// run on the background workers (see bgwork.go and dlworker.go).
 	if r.parallelDownloads() > 1 || r.live != nil {
@@ -255,13 +264,14 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 			partPath:      partPath,
 			finalPath:     trackPath,
 			coverToRemove: coverToRemove,
+			workDir:       workDir,
 			preID:         track.PreID,
 			taskNum:       track.TaskNum,
 			added:         added,
 			view:          r.live,
 			item:          r.sayItem,
 		}
-		if cj, ok := r.prepareConvert(trackPath, track.Codec); ok {
+		if cj, ok := r.prepareConvert(convertSrc, track.Codec); ok {
 			job.convert = true
 			job.convertJob = cj
 		}
@@ -366,11 +376,12 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 		partPath:      partPath,
 		finalPath:     trackPath,
 		coverToRemove: coverToRemove,
+		workDir:       workDir,
 		preID:         track.PreID,
 		taskNum:       track.TaskNum,
 		added:         added,
 	}
-	if cj, ok := r.prepareConvert(trackPath, track.Codec); ok {
+	if cj, ok := r.prepareConvert(convertSrc, track.Codec); ok {
 		job.convert = true
 		job.convertJob = cj
 	}

@@ -34,6 +34,7 @@ func Default() Config {
 			AlbumFolder:          "{AlbumName}",
 			PlaylistFolder:       "{PlaylistName}",
 			PlaylistAlbumFolders: false,
+			WorkDir:              "auto",
 			ArtistFolder:         "{UrlArtistName}",
 			SongFile:             "{SongNumer}. {SongName}",
 			LimitMax:             200,

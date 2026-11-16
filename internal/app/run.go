@@ -286,6 +286,7 @@ func Main() {
 	}
 
 	r.printTimingsSummary()
+	r.removeWorkRun()
 
 	// Print JSON output
 	if r.Flags.PrintJSON {

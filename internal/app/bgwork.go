@@ -63,6 +63,9 @@ type trackJob struct {
 	partPath      string // where the download is written
 	finalPath     string // the .m4a name once tagged
 	coverToRemove string // per-track playlist cover, deleted after tagging
+	// workDir: the track's work folder (paths.work-dir), or "" to work in
+	// the save folder. Everything finished in it is moved there at the end.
+	workDir string
 
 	// Live progress list entry (nil when the list is not shown).
 	view *liveView
@@ -177,7 +180,9 @@ func (r *Runner) runJob(job trackJob) trackResult {
 		reason := fmt.Sprintf(format, args...)
 		job.view.update(job.item, func(it *liveItem) { it.state, it.step = liveFailed, reason })
 		// Drop the unfinished file, so a retry downloads the track again.
-		if job.post {
+		if job.workDir != "" {
+			os.RemoveAll(job.workDir)
+		} else if job.post {
 			os.Remove(job.partPath)
 		}
 		res.counter = counter
@@ -294,7 +299,11 @@ func (r *Runner) runJob(job trackJob) trackResult {
 		if err := r.writeMP4Tags(job.track, job.partPath, job.lrc); err != nil {
 			return fail("unavailable", "⚠ Failed to write tags in media: %v", err)
 		}
-		if err := os.Rename(job.partPath, job.finalPath); err != nil {
+		tagged := job.finalPath
+		if job.workDir != "" {
+			tagged = filepath.Join(job.workDir, filepath.Base(job.finalPath))
+		}
+		if err := os.Rename(job.partPath, tagged); err != nil {
 			return fail("error", "Failed to rename %s: %v", filepath.Base(job.partPath), err)
 		}
 		mark("tags")
@@ -320,6 +329,20 @@ func (r *Runner) runJob(job trackJob) trackResult {
 		}
 		<-r.bg.converts
 		mark("convert")
+	}
+
+	if job.workDir != "" {
+		// Move the finished file(s) to the save folder.
+		setState(liveProcessing, "moving to the save folder")
+		destDir := filepath.Dir(job.finalPath)
+		moved, err := deliverWork(job.workDir, destDir)
+		if err != nil {
+			return fail("error", "\u26A0 %v", err)
+		}
+		if p, ok := moved[filepath.Base(res.path)]; ok {
+			res.path = p
+		}
+		mark("move")
 	}
 	setState(liveDone, "")
 	res.output = out.String()
