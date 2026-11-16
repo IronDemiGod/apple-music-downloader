@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"amdl/internal/fsutil"
 )
 
 // Work folder (paths.work-dir): when set, a track is downloaded and processed
@@ -33,7 +35,7 @@ func (r *Runner) workRunDir() string {
 	}
 	root := r.Config.Paths.WorkDir
 	if strings.TrimSpace(root) == "auto" {
-		root = autoWorkDir()
+		root = r.autoWorkDir()
 	}
 	root = expandPath(root)
 	if root == "" {
@@ -44,6 +46,9 @@ func (r *Runner) workRunDir() string {
 		fmt.Printf("⚠ work-dir %s cannot be used (%v); working in the save folders.\n", root, err)
 		r.workRunFailed = true
 		return ""
+	}
+	if runtime.GOOS == "windows" {
+		_ = fsutil.MarkHidden(root)
 	}
 	removeDeadRuns(root)
 	run := filepath.Join(root, "run-"+strconv.Itoa(os.Getpid()))
@@ -77,14 +82,23 @@ func (r *Runner) trackWorkDir(trackID string) string {
 	return dir
 }
 
-// autoWorkDir is the work folder for work-dir "auto": RAM on Linux
-// (/dev/shm), none elsewhere (no RAM disk is available by default).
-func autoWorkDir() string {
-	if runtime.GOOS != "linux" {
-		return ""
-	}
-	if fi, err := os.Stat("/dev/shm"); err == nil && fi.IsDir() {
-		return "/dev/shm/amdl"
+// autoWorkDir is the work folder for work-dir "auto":
+//   - Linux: RAM (/dev/shm/amdl);
+//   - Windows: a hidden ".amdl-work" folder in the save folder. Its files get
+//     the temporary attribute, so Windows keeps them in memory, and being on
+//     the save folder's drive, the finished file is moved there by a rename:
+//     only that file is ever written to disk;
+//   - elsewhere: none (work in the save folder).
+func (r *Runner) autoWorkDir() string {
+	switch runtime.GOOS {
+	case "linux":
+		if fi, err := os.Stat("/dev/shm"); err == nil && fi.IsDir() {
+			return "/dev/shm/amdl"
+		}
+	case "windows":
+		if root := r.formatRoot(); root != "" {
+			return filepath.Join(root, ".amdl-work")
+		}
 	}
 	return ""
 }
@@ -210,6 +224,9 @@ func deliverWork(workDir, destDir string) (map[string]string, error) {
 		if err := moveFile(filepath.Join(workDir, name), dst); err != nil {
 			return moved, fmt.Errorf("move %s to %s: %w", name, destDir, err)
 		}
+		// A file kept in memory as a work file is written to disk normally
+		// from now on (Windows temporary attribute).
+		_ = fsutil.ClearTemporary(dst)
 		moved[name] = dst
 	}
 	return moved, os.RemoveAll(workDir)

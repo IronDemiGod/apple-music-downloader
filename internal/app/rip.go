@@ -5,6 +5,7 @@ import (
 	fairplayrip "amdl/internal/fairplay-rip"
 	defrag "amdl/internal/media/defrag"
 	"amdl/internal/media/lyrics"
+	"amdl/internal/fsutil"
 	"amdl/internal/model"
 	"amdl/internal/widevine-rip"
 	"amdl/internal/widevine-rip/runv5"
@@ -242,6 +243,9 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 	if workDir != "" {
 		partPath = filepath.Join(workDir, filepath.Base(partPath))
 		convertSrc = filepath.Join(workDir, filepath.Base(trackPath))
+		// On Windows: created now with the temporary attribute, which the
+		// download keeps (it reopens the file), so it stays in memory.
+		_ = fsutil.CreateTemporary(partPath)
 	}
 
 	// Parallel downloads: the download itself, the lyrics and all processing

@@ -1844,6 +1844,14 @@ func writeProgressiveMP4(
 	}
 
 	tmpName := tmp.Name()
+	// A work file kept in memory (Windows temporary attribute, see
+	// fsutil.MarkTemporary) keeps it for the rewritten copy, which then also
+	// skips the sync below: forcing a work file to disk would defeat keeping it
+	// in memory, and a .part work file is redone after a crash anyway.
+	inMemory := fsutil.IsTemporary(inputPath)
+	if inMemory {
+		_ = fsutil.MarkTemporary(tmpName)
+	}
 
 	cleanup := func() {
 		_ = tmp.Close()
@@ -1956,8 +1964,10 @@ func writeProgressiveMP4(
 		return fmt.Errorf("flush output: %w", err)
 	}
 
-	if err := tmp.Sync(); err != nil {
-		return fmt.Errorf("sync output: %w", err)
+	if !inMemory {
+		if err := tmp.Sync(); err != nil {
+			return fmt.Errorf("sync output: %w", err)
+		}
 	}
 
 	if err := tmp.Close(); err != nil {
