@@ -5,7 +5,7 @@
 > [!NOTE]
 > **This is a fork** of [zhaarey/apple-music-downloader](https://github.com/zhaarey/apple-music-downloader)
 > that adds playlist-to-album-folder sorting, lossless full-size PNG covers and the `coverfix` tool.
-> Download its builds from **[this fork's releases](https://github.com/IronDemiGod/apple-music-downloader/releases)**
+> Download its builds from **[the amud releases](https://github.com/IronDemiGod/amud/releases)**
 > (the links further down point to upstream's, which lack these changes) and see the
 > **[install guide](https://github.com/IronDemiGod/amud#install)**.
 > The rest of this page is upstream's documentation and still applies.
@@ -494,7 +494,7 @@ go build -o amdl.exe .
 
 Releases are driven by the `VERSION` file. When a push to `main` carries a `VERSION` whose `v<VERSION>` tag does not exist yet, the Release workflow builds every platform and publishes a GitHub Release with that tag. To cut a release, bump `VERSION` (e.g. `0.1.0` → `0.1.1`) and merge it into `main`. A version with a suffix such as `0.2.0-beta.1` is published as a pre-release.
 
-Release binaries self-update from the repository that built them, so a fork's releases update from the fork.
+Release binaries self-update from the repository that published them, so a fork's releases update from the fork (this fork's builds are published on, and update from, [IronDemiGod/amud](https://github.com/IronDemiGod/amud/releases)).
 
 ## Credits
 
