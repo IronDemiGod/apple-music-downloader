@@ -2,6 +2,14 @@
 
 [English](./README.md) | [简体中文](./README-CN.md) | [Cloud Server / Proxy Setup](./PROXY-SETUP.md)
 
+> [!NOTE]
+> **This is a fork** of [zhaarey/apple-music-downloader](https://github.com/zhaarey/apple-music-downloader)
+> that adds playlist-to-album-folder sorting, lossless full-size PNG covers and the `coverfix` tool.
+> Download its builds from **[this fork's releases](https://github.com/IronDemiGod/apple-music-downloader/releases)**
+> (the links further down point to upstream's, which lack these changes) and see the
+> **[install guide](https://github.com/IronDemiGod/amud#install)**.
+> The rest of this page is upstream's documentation and still applies.
+
 > **Original script by Sorrow.** Modified with fixes and improvements.
 
 This command-line tool downloads albums, songs, playlists, stations and music videos from Apple Music, preserves or embeds metadata and lyrics, and supports ALAC, AAC and Dolby Atmos. Use it only with content you are entitled to access and in accordance with Apple's terms and applicable law.

@@ -2,6 +2,13 @@
 
 [English](./README.md) | [简体中文](./README-CN.md) | [云服务器 / 代理配置](./PROXY-SETUP.md)
 
+> [!NOTE]
+> **这是 [zhaarey/apple-music-downloader](https://github.com/zhaarey/apple-music-downloader) 的分支**，
+> 新增了将播放列表歌曲整理到“艺人/专辑”文件夹、无损全尺寸 PNG 封面以及 `coverfix` 工具。
+> 请从 **[本分支的 Releases](https://github.com/IronDemiGod/apple-music-downloader/releases)** 下载
+> （下文链接指向上游版本，不含这些改动），安装说明见 **[安装指南](https://github.com/IronDemiGod/amud#install)**（英文）。
+> 本页其余内容为上游文档，仍然适用。
+
 > **原脚本由 Sorrow 编写。** 本仓库已修改并包含修复与改进。
 
 这是一个命令行工具，可从 Apple Music 下载专辑、单曲、播放列表、电台和音乐视频，支持 ALAC、AAC 和杜比全景声，并能保留或嵌入元数据与歌词。请仅用于你有权访问的内容，并遵守 Apple 条款和适用法律。
