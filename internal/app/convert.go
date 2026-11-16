@@ -172,7 +172,13 @@ func (r *Runner) runConvert(job convertJob, w io.Writer) (string, bool) {
 	}
 	cmd.Stdout = nil
 	start := time.Now()
-	if err := cmd.Run(); err != nil {
+	// ffmpeg runs at lower priority, so it yields the CPU to the download of the
+	// next track; its output is the same.
+	err := startLowPriority(cmd)
+	if err == nil {
+		err = cmd.Wait()
+	}
+	if err != nil {
 		fmt.Fprintln(w, "Conversion failed:", err)
 		// leave original
 		os.Remove(tmpPath)
