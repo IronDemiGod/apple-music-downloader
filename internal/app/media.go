@@ -120,6 +120,14 @@ func (r *Runner) writeCoverFrom(sanAlbumFolder, name string, url string) (string
 }
 
 func (r *Runner) getCover(url string, out *os.File) error {
+	if r.covers != nil {
+		return r.cachedCover(url, out)
+	}
+	return downloadCover(url, out)
+}
+
+// downloadCover downloads a cover image into out, replacing its contents.
+func downloadCover(url string, out *os.File) error {
 	if err := out.Truncate(0); err != nil {
 		return err
 	}

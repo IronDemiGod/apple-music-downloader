@@ -48,6 +48,11 @@ type Runner struct {
 	// into album folders shows one list): endLive does nothing while set.
 	liveHeld bool
 
+	// covers caches cover downloads while albums are prefetched (prefetch.go);
+	// prefetching marks the prefetch workers' own runner.
+	covers      *coverCache
+	prefetching bool
+
 	// sayItem is the live list entry of the track being prepared on the main
 	// goroutine; sayf/sayln send its messages there instead of the screen.
 	sayItem *liveItem

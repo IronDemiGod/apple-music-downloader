@@ -13,6 +13,9 @@ import (
 
 func GetAlbumResp(storefront string, id string, language string, token string) (*AlbumResp, error) {
 	var err error
+	if v, ok := prefetchedAlbums.LoadAndDelete(albumKey(storefront, id, language)); ok {
+		return v.(*AlbumResp), nil
+	}
 	if token == "" {
 		token, err = GetToken()
 		if err != nil {

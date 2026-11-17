@@ -1210,8 +1210,11 @@ func (r *Runner) ripPlaylistIntoAlbumFolders(playlist *model.Playlist, playlistN
 	r.beginLive(playlist.Name, listed)
 	r.liveHeld = r.live != nil
 	var failures []string
-	for _, albumId := range albumOrder {
-		if err := r.ripAlbum(albumId, token, storefront, mediaUserToken, strings.Join(albumTrackIDs[albumId], ",")); err != nil {
+	pf := r.startAlbumPrefetch(albumOrder, storefront, token)
+	for i, albumId := range albumOrder {
+		err := r.ripAlbum(albumId, token, storefront, mediaUserToken, strings.Join(albumTrackIDs[albumId], ","))
+		pf.done(i)
+		if err != nil {
 			msg := fmt.Sprintf("\u26A0 Failed to rip album %s: %v", albumId, err)
 			if r.live == nil {
 				fmt.Println(msg)
@@ -1225,6 +1228,7 @@ func (r *Runner) ripPlaylistIntoAlbumFolders(playlist *model.Playlist, playlistN
 			}
 		}
 	}
+	pf.stop(albumOrder, storefront)
 	r.liveHeld = false
 	r.endLive()
 	for _, msg := range failures {
