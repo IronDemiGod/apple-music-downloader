@@ -21,11 +21,12 @@ import (
 const helpText = `coverfix - redo the album covers of an amdl music library
 
 USAGE
-  coverfix --cover=FORMAT --embed=FORMAT [OPTIONS] [FOLDER ...]
+  coverfix --cover FORMAT --embed FORMAT [OPTIONS] [FOLDER ...]
+  (every option takes its value after a space or an =: --embed png, --embed=png)
 
 REQUIRED
-  --cover=FORMAT     the cover file saved in each album folder (cover.jpg / cover.png)
-  --embed=FORMAT     the picture embedded in every track (.flac and .m4a)
+  --cover FORMAT     the cover file saved in each album folder (cover.jpg / cover.png)
+  --embed FORMAT     the picture embedded in every track (.flac and .m4a)
 
 FORMAT
   jpg or png, optionally followed by a resolution from 100 to 10000:
@@ -40,7 +41,7 @@ OPTIONS
   -j, --parallel N   albums processed at once (default 4)
       --in FOLDER    the FOLDER arguments are names inside FOLDER; several may be
                      given in one argument, separated by commas:
-                       coverfix --cover=png --embed=png --in "C:/Music" "ADO,Pink Floyd,King Gnu"
+                       coverfix --cover png --embed png --in "C:/Music" "ADO,Pink Floyd,King Gnu"
                      A name that contains a comma itself is used whole when that
                      folder exists. Without FOLDER arguments, all of FOLDER is done.
       --no-live      plain output instead of the live progress bars
@@ -67,16 +68,16 @@ WHAT IT DOES, FOR EACH ALBUM FOLDER
 
 NOTES
   - FLAC can embed a picture of at most about 16 MB. A full-size PNG usually
-    fits, but if a track reports "too large", use e.g. --embed=png4000 or jpg.
+    fits, but if a track reports "too large", use e.g. --embed png4000 or jpg.
   - A full-size PNG embedded in every track adds 10-15 MB per track.
   - Exit code: 0 when everything worked, 1 when an album or track failed,
     2 for wrong arguments.
 
 EXAMPLES
-  coverfix --cover=png --embed=jpg3000 -n "C:\Music"     preview the whole library
-  coverfix --cover=png --embed=jpg3000 "C:\Music"        do it
-  coverfix --cover=png --embed=png "C:\Music\Artist"     one artist, full-size PNG everywhere
-  coverfix --cover=jpg --embed=jpg1400                   folders from config.yaml
+  coverfix --cover png --embed jpg3000 -n "C:\Music"     preview the whole library
+  coverfix --cover png --embed jpg3000 "C:\Music"        do it
+  coverfix --cover png --embed png "C:\Music\Artist"     one artist, full-size PNG everywhere
+  coverfix --cover jpg --embed jpg1400                   folders from config.yaml
 `
 
 func main() {
@@ -103,7 +104,7 @@ func main() {
 	}
 
 	if coverArg == "" || embedArg == "" {
-		fmt.Fprintln(os.Stderr, "error: --cover and --embed are both required, e.g. --cover=png --embed=jpg3000")
+		fmt.Fprintln(os.Stderr, "error: --cover and --embed are both required, e.g. --cover png --embed jpg3000")
 		fmt.Fprintln(os.Stderr, "Run 'coverfix --help' for usage.")
 		os.Exit(2)
 	}
