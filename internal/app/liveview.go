@@ -43,6 +43,7 @@ const (
 )
 
 type liveItem struct {
+	id      string // track ID
 	num     int
 	name    string
 	artist  string
@@ -57,6 +58,7 @@ type liveItem struct {
 	finished  time.Duration // download time, once downloaded
 	notes     []string      // messages printed after the list (failed tracks)
 	downloadB int64         // final size, for the "done" line
+	claimed   bool          // taken by a track (see itemFor)
 }
 
 type liveView struct {
@@ -125,6 +127,55 @@ func (v *liveView) item(num int) *liveItem {
 		}
 	}
 	return nil
+}
+
+// itemFor returns the list entry for a track about to be downloaded and
+// claims it: the first unclaimed entry with the track's ID, else with its
+// number. By ID, a playlist's list finds its tracks while they are downloaded
+// as part of their albums (with the albums' track numbers); claiming keeps a
+// song listed twice on two entries.
+func (v *liveView) itemFor(t *model.Track) *liveItem {
+	if v == nil {
+		return nil
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	var found *liveItem
+	for _, it := range v.items {
+		if !it.claimed && t.ID != "" && it.id == t.ID {
+			found = it
+			break
+		}
+	}
+	if found == nil {
+		for _, it := range v.items {
+			if !it.claimed && it.id == "" && it.num == t.TaskNum {
+				found = it
+				break
+			}
+		}
+	}
+	if found != nil {
+		found.claimed = true
+	}
+	return found
+}
+
+// failItem shows an unclaimed entry of the track ID as failed with reason.
+func (v *liveView) failItem(id, reason string) {
+	if v == nil {
+		return
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	for _, it := range v.items {
+		if !it.claimed && it.id == id {
+			it.claimed = true
+			it.state, it.step = liveFailed, reason
+			it.notes = append(it.notes, reason)
+			return
+		}
+	}
 }
 
 // update changes an item under the view's lock; safe from any goroutine and
@@ -486,7 +537,7 @@ func (r *Runner) beginLive(title string, tracks []*model.Track) {
 		if t.Type == "music-videos" {
 			return
 		}
-		items = append(items, liveItem{num: t.TaskNum, name: t.Resp.Attributes.Name, artist: t.Resp.Attributes.ArtistName})
+		items = append(items, liveItem{id: t.ID, num: t.TaskNum, name: t.Resp.Attributes.Name, artist: t.Resp.Attributes.ArtistName})
 	}
 	r.live = r.startLive(title, items)
 }
@@ -499,7 +550,7 @@ func (r *Runner) markLiveDone(num int) {
 // endLive waits for every queued track, draws the final list and then prints
 // the messages of tracks that failed.
 func (r *Runner) endLive() {
-	if r.live == nil {
+	if r.live == nil || r.liveHeld {
 		return
 	}
 	r.waitJobs()

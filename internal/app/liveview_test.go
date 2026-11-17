@@ -1,6 +1,7 @@
 package app
 
 import (
+	"amdl/internal/model"
 	"bytes"
 	"fmt"
 	"os"
@@ -176,4 +177,42 @@ func TestPipelineUpdatesLiveItems(t *testing.T) {
 	if two.state != liveFailed || !strings.Contains(two.step, "connection reset") || len(two.notes) == 0 {
 		t.Errorf("item 2 = state %d, step %q, notes %v", two.state, two.step, two.notes)
 	}
+}
+
+func TestAlbumIDFromSongURL(t *testing.T) {
+	cases := map[string]string{
+		"https://music.apple.com/us/album/vivarium/1640123456?i=1640123457": "1640123456",
+		"https://music.apple.com/jp/album/1640123456?i=1":                   "1640123456",
+		"https://music.apple.com/us/song/vivarium/1640123457":               "",
+		"https://music.apple.com/us/album/name/pl.abc":                      "",
+		"": "",
+	}
+	for in, want := range cases {
+		if got := albumIDFromSongURL(in); got != want {
+			t.Errorf("albumIDFromSongURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A playlist's list holds its tracks by ID: downloaded as part of their
+// albums, they have the albums' track numbers, and a song listed twice gets
+// both entries.
+func TestItemForByID(t *testing.T) {
+	v := testView(
+		liveItem{id: "111", num: 1, name: "A"},
+		liveItem{id: "222", num: 2, name: "B"},
+		liveItem{id: "111", num: 3, name: "A again"},
+	)
+	if it := v.itemFor(&model.Track{ID: "222", TaskNum: 7}); it == nil || it.name != "B" {
+		t.Fatalf("by ID: got %+v", it)
+	}
+	first := v.itemFor(&model.Track{ID: "111", TaskNum: 1})
+	second := v.itemFor(&model.Track{ID: "111", TaskNum: 1})
+	if first == nil || second == nil || first == second {
+		t.Fatalf("a song listed twice must get both entries: %v %v", first, second)
+	}
+	if v.itemFor(&model.Track{ID: "111", TaskNum: 1}) != nil {
+		t.Fatal("all entries of 111 are claimed")
+	}
+	v.failItem("333", "x") // unknown ID: nothing happens
 }

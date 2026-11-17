@@ -44,6 +44,9 @@ type Runner struct {
 	State  State
 	bg     *bgWorker // background post-processing workers, started on first use
 	live   *liveView // live progress list of the album/playlist being downloaded
+	// liveHeld keeps the live list open across albums (a playlist sorted
+	// into album folders shows one list): endLive does nothing while set.
+	liveHeld bool
 
 	// sayItem is the live list entry of the track being prepared on the main
 	// goroutine; sayf/sayln send its messages there instead of the screen.

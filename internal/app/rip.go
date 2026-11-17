@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/itouakirai/go-mp4tag"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,7 +31,7 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 
 	// With the live list, this track's messages go to its entry instead of the
 	// screen, and its outcome here (already there, failed) is shown in it.
-	r.sayItem = r.live.item(track.TaskNum)
+	r.sayItem = r.live.itemFor(track)
 	if r.sayItem != nil {
 		item, before := r.sayItem, r.State.Counter
 		defer func() {
@@ -643,7 +644,9 @@ func (r *Runner) ripAlbum(albumId string, token string, storefront string, media
 	album := model.NewAlbum(storefront, albumId)
 	err := album.GetResp(token, r.Config.General.Language)
 	if err != nil {
-		fmt.Println("Failed to get album response.")
+		if r.live == nil {
+			fmt.Println("Failed to get album response.")
+		}
 		return err
 	}
 	meta := album.Resp
@@ -816,18 +819,20 @@ func (r *Runner) ripAlbum(albumId string, token string, storefront string, media
 		return err
 	}
 	album.SaveName = albumFolderName
-	fmt.Println(albumFolderName)
+	if r.live == nil {
+		fmt.Println(albumFolderName)
+	}
 	if r.Config.Metadata.Artwork.SaveArtist && len(meta.Data[0].Relationships.Artists.Data) > 0 {
 		if meta.Data[0].Relationships.Artists.Data[0].Attributes.Artwork.Url != "" {
 			_, err = r.writeCover(singerFolder, "folder", meta.Data[0].Relationships.Artists.Data[0].Attributes.Artwork.Url)
 			if err != nil {
-				fmt.Println("Failed to write artist cover.")
+				r.sayln("Failed to write artist cover.")
 			}
 		}
 	}
 	covPath, err := r.writeCover(albumFolderPath, "cover", meta.Data[0].Attributes.Artwork.URL)
 	if err != nil {
-		fmt.Println("Failed to write cover.")
+		r.sayln("Failed to write cover.")
 	}
 	if r.Config.Metadata.Artwork.SaveAnimated {
 		r.saveAnimatedArtwork(
@@ -871,7 +876,11 @@ func (r *Runner) ripAlbum(albumId string, token string, storefront string, media
 			}
 		}
 		for _, id := range missing {
-			fmt.Printf("\u26A0 Track %s is not part of album %s, skipped.\n", id, albumId)
+			if r.live != nil {
+				r.live.failItem(id, "not found in its album "+albumId)
+			} else {
+				fmt.Printf("\u26A0 Track %s is not part of album %s, skipped.\n", id, albumId)
+			}
 			r.State.Counter.Total++
 			r.State.Counter.Unavailable++
 		}
@@ -1151,6 +1160,7 @@ func (r *Runner) ripPlaylistIntoAlbumFolders(playlist *model.Playlist, playlistN
 	startIdx := len(r.State.AddedTracks)
 	var albumOrder []string
 	albumTrackIDs := make(map[string][]string)
+	var listed []*model.Track
 
 	for i := range playlist.Tracks {
 		trackNum := i + 1
@@ -1173,29 +1183,77 @@ func (r *Runner) ripPlaylistIntoAlbumFolders(playlist *model.Playlist, playlistN
 			continue
 		}
 
-		albumId, err := r.albumIDForSong(track.ID, storefront, token)
-		if err != nil {
-			fmt.Printf("\u26A0 Failed to find the album of %q, skipped: %v\n", track.Name, err)
-			r.State.Counter.Total++
-			r.State.Counter.Unavailable++
-			continue
+		// The album is in the song's catalog URL (".../album/name/<id>?i=...");
+		// only when it is not, ask the API (one request per song).
+		albumId := albumIDFromSongURL(track.Resp.Attributes.URL)
+		if albumId == "" {
+			var err error
+			albumId, err = r.albumIDForSong(track.ID, storefront, token)
+			if err != nil {
+				fmt.Printf("\u26A0 Failed to find the album of %q, skipped: %v\n", track.Name, err)
+				r.State.Counter.Total++
+				r.State.Counter.Unavailable++
+				continue
+			}
 		}
 		if _, seen := albumTrackIDs[albumId]; !seen {
 			albumOrder = append(albumOrder, albumId)
 		}
 		albumTrackIDs[albumId] = append(albumTrackIDs[albumId], track.ID)
+		listed = append(listed, track)
 	}
 
+	// One live list for the whole playlist, kept open across its albums, so
+	// the next album's tracks start while the previous album's still download.
+	r.beginLive(playlist.Name, listed)
+	r.liveHeld = r.live != nil
+	var failures []string
 	for _, albumId := range albumOrder {
 		if err := r.ripAlbum(albumId, token, storefront, mediaUserToken, strings.Join(albumTrackIDs[albumId], ",")); err != nil {
-			fmt.Printf("\u26A0 Failed to rip album %s: %v\n", albumId, err)
+			msg := fmt.Sprintf("\u26A0 Failed to rip album %s: %v", albumId, err)
+			if r.live == nil {
+				fmt.Println(msg)
+				continue
+			}
+			failures = append(failures, msg)
+			for _, id := range albumTrackIDs[albumId] {
+				r.State.Counter.Total++
+				r.State.Counter.Error++
+				r.live.failItem(id, fmt.Sprintf("album %s: %v", albumId, err))
+			}
 		}
+	}
+	r.liveHeld = false
+	r.endLive()
+	for _, msg := range failures {
+		fmt.Println(msg)
 	}
 
 	// The playlist has no folder of its own here, so the M3U8 goes to the
 	// format folder with the track paths relative to it.
 	r.saveM3UPlaylist(r.formatRoot(), playlistName, startIdx)
 	return nil
+}
+
+// albumIDFromSongURL returns the album ID in a song's catalog URL, e.g.
+// "https://music.apple.com/us/album/vivarium/1640123456?i=1640123457", or "".
+func albumIDFromSongURL(u string) string {
+	parsed, err := url.Parse(u)
+	if err != nil {
+		return ""
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	for i, p := range parts {
+		if p != "album" || i+1 >= len(parts) {
+			continue
+		}
+		id := parts[len(parts)-1]
+		if id == "" || strings.Trim(id, "0123456789") != "" {
+			return ""
+		}
+		return id
+	}
+	return ""
 }
 
 // albumIDForSong resolves the catalog album a song belongs to.
