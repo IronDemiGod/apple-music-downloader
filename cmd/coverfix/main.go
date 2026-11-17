@@ -37,6 +37,7 @@ FORMAT
 OPTIONS
   -n, --dry-run      show what would be changed; change nothing, look nothing up
   -j, --parallel N   albums processed at once (default 4)
+      --no-live      plain output instead of the live progress bars
   -c, --config FILE  amdl config to read proxy, storefront, language and music
                      folders from (default: config.yaml)
       --storefront CC  storefront to look albums up in (default: the config's
@@ -74,7 +75,7 @@ EXAMPLES
 
 func main() {
 	var configFile, storefront, coverArg, embedArg string
-	var dryRun bool
+	var dryRun, noLive bool
 	var parallel int
 	flags := pflag.NewFlagSet("coverfix", pflag.ContinueOnError)
 	flags.StringVar(&coverArg, "cover", "", "format of the folder's cover file")
@@ -83,6 +84,7 @@ func main() {
 	flags.StringVar(&storefront, "storefront", "", "storefront to look albums up in")
 	flags.BoolVarP(&dryRun, "dry-run", "n", false, "only show what would be changed")
 	flags.IntVarP(&parallel, "parallel", "j", 4, "albums processed at once")
+	flags.BoolVar(&noLive, "no-live", false, "plain output instead of the live progress bars")
 	flags.Usage = func() { fmt.Fprint(os.Stdout, helpText) }
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		if errors.Is(err, pflag.ErrHelp) {
@@ -156,6 +158,7 @@ func main() {
 	fmt.Printf("cover: %s  |  embed: %s\n", coverSpec, embedSpec)
 	opt := app.CoverFixOptions{Cover: coverSpec, Embed: embedSpec, DryRun: dryRun, Parallel: parallel}
 	r := app.NewRunner(cfg)
+	r.Flags.NoLive = noLive
 	var total app.CoverFixResult
 	for _, root := range roots {
 		fmt.Println("==>", root)

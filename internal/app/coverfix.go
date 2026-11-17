@@ -139,18 +139,29 @@ func (r *Runner) RefreshCovers(root, storefront, token string, opt CoverFixOptio
 	// Find the folders first, then process up to opt.Parallel albums at once:
 	// one album's lookup and cover download overlap another's file rewrites.
 	// Each album's messages are printed as one block, in folder order.
+	// Only folders that hold audio files count as albums.
 	var dirs []string
-	err := filepath.WalkDir(root, func(dir string, d os.DirEntry, err error) error {
+	seen := map[string]bool{}
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			fmt.Printf("✖ %s: %v\n", dir, err)
+			fmt.Printf("✖ %s: %v\n", path, err)
 			res.Failed++
 			return nil
 		}
 		if d.IsDir() {
-			dirs = append(dirs, dir)
+			return nil
+		}
+		switch strings.ToLower(filepath.Ext(path)) {
+		case ".flac", ".m4a":
+			if dir := filepath.Dir(path); !seen[dir] {
+				seen[dir] = true
+				dirs = append(dirs, dir)
+			}
 		}
 		return nil
 	})
+	sort.Strings(dirs)
+	view := r.newCoverView(len(dirs))
 
 	type albumDone struct {
 		out string
@@ -171,27 +182,37 @@ func (r *Runner) RefreshCovers(root, storefront, token string, opt CoverFixOptio
 			go func(i int, dir string) {
 				defer func() { <-slots }()
 				var out bytes.Buffer
-				ar := r.refreshAlbum(&out, dir, storefront, token, opt)
+				name := dir
+				if rel, err := filepath.Rel(root, dir); err == nil && rel != "." {
+					name = filepath.ToSlash(rel)
+				}
+				ar := r.refreshAlbum(&out, dir, storefront, token, opt, view.begin(i, name))
+				view.end(i, ar.Failed > 0)
 				results[i] <- albumDone{out.String(), ar}
 			}(i, dir)
 		}
 	}()
 	for i := range dirs {
 		d := <-results[i]
-		fmt.Print(d.out)
+		if view != nil {
+			view.log(d.out)
+		} else {
+			fmt.Print(d.out)
+		}
 		res.Refreshed += d.res.Refreshed
 		res.Skipped += d.res.Skipped
 		res.Failed += d.res.Failed
 		res.TracksEmbedded += d.res.TracksEmbedded
 		res.TracksFailed += d.res.TracksFailed
 	}
+	view.finish()
 	return res, err
 }
 
 // refreshAlbum refreshes the covers of one folder, writing its messages to w.
 // Folders without tracks are left alone. It only reads r.Config, so several
 // albums can run at once.
-func (r *Runner) refreshAlbum(w io.Writer, dir, storefront, token string, opt CoverFixOptions) CoverFixResult {
+func (r *Runner) refreshAlbum(w io.Writer, dir, storefront, token string, opt CoverFixOptions, p *albumProgress) CoverFixResult {
 	var res CoverFixResult
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -232,6 +253,7 @@ func (r *Runner) refreshAlbum(w io.Writer, dir, storefront, token string, opt Co
 		return res
 	}
 
+	p.step("looking up the album")
 	template, via, err := r.findAlbumArtwork(tracks, storefront, token)
 	if err != nil {
 		fmt.Fprintf(w, "✖ %s: %v (kept existing covers)\n", dir, err)
@@ -239,6 +261,7 @@ func (r *Runner) refreshAlbum(w io.Writer, dir, storefront, token string, opt Co
 		return res
 	}
 
+	p.step("downloading the cover")
 	newCover, err := saveArtwork(filepath.Join(dir, "cover."+opt.Cover.Format), opt.Cover.url(template))
 	if err != nil {
 		fmt.Fprintf(w, "✖ %s: cover download failed: %v (kept existing covers)\n", dir, err)
@@ -270,6 +293,8 @@ func (r *Runner) refreshAlbum(w io.Writer, dir, storefront, token string, opt Co
 	// track is retried with a smaller PNG (see pngRetrySteps); the size
 	// that fits is then used for the album's other FLAC tracks too.
 	flacImg, flacSpec := embedImg, opt.Embed
+	p.step("embedding")
+	p.tracks(0, len(trackPaths))
 	for _, tp := range trackPaths {
 		img, spec := embedImg, opt.Embed
 		if strings.EqualFold(filepath.Ext(tp), ".flac") {
@@ -284,6 +309,7 @@ func (r *Runner) refreshAlbum(w io.Writer, dir, storefront, token string, opt Co
 			}
 			fmt.Fprintf(w, "  %s: %v; retrying with png %dx%d\n", filepath.Base(tp), err, step, step)
 			spec = ArtSpec{Format: "png", Res: step}
+			p.step(fmt.Sprintf("retrying with png %dx%d", step, step))
 			smaller, dlErr := fetchArtwork(spec.url(template))
 			if dlErr != nil {
 				err = fmt.Errorf("download png %dx%d: %w", step, step, dlErr)
@@ -298,9 +324,12 @@ func (r *Runner) refreshAlbum(w io.Writer, dir, storefront, token string, opt Co
 		if err != nil {
 			fmt.Fprintf(w, "  could not embed into %s: %v\n", filepath.Base(tp), err)
 			failed++
+			p.tracks(embedded+failed, len(trackPaths))
 			continue
 		}
 		embedded++
+		p.tracks(embedded+failed, len(trackPaths))
+		p.step("embedding")
 	}
 	if flacSpec != opt.Embed {
 		fmt.Fprintf(w, "  FLAC tracks embedded with %s (%s was too large for FLAC)\n", flacSpec, opt.Embed)
