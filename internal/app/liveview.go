@@ -434,11 +434,8 @@ func (v *liveView) frame(width, height int) []string {
 		recent = nil
 	}
 	// Finished tracks take the room the active ones leave, newest first, at
-	// most maxRecent; already downloaded ones are counted in a line below.
+	// most maxRecent.
 	free := room - len(active)
-	if existed > 0 {
-		free--
-	}
 	if free > maxRecent {
 		free = maxRecent
 	}
@@ -452,9 +449,6 @@ func (v *liveView) frame(width, height int) []string {
 	shown := append(active, recent...)
 	sort.SliceStable(shown, func(i, j int) bool { return shown[i].num < shown[j].num })
 	lines = append(lines, itemLines(shown, cols, now)...)
-	if existed > 0 && more == 0 {
-		lines = append(lines, fit(fmt.Sprintf("%s✔ %d already downloaded%s", ansiGreen, existed, ansiReset), cols))
-	}
 	if more > 0 {
 		lines = append(lines, fit(fmt.Sprintf("%s… %d more%s", ansiDim, more, ansiReset), cols))
 	}

@@ -245,8 +245,8 @@ func TestRenderLogsAboveBars(t *testing.T) {
 	}
 }
 
-// A mostly downloaded playlist: skipped tracks get at most maxRecent lines and
-// a count, not a line each.
+// A mostly downloaded playlist: skipped tracks get at most maxRecent lines,
+// not a line each.
 func TestFrameLimitsSkipped(t *testing.T) {
 	var items []liveItem
 	for i := 1; i <= 40; i++ {
@@ -256,10 +256,10 @@ func TestFrameLimitsSkipped(t *testing.T) {
 	v := testView(items...)
 	lines := v.frame(100, 50)
 	all := visible(strings.Join(lines, "\n"))
-	if len(lines) != 2+1+maxRecent+1 { // header, bar, the download, recent, the count
+	if len(lines) != 2+1+maxRecent { // header, bar, the download, recent
 		t.Fatalf("%d lines:\n%s", len(lines), all)
 	}
-	if !strings.Contains(all, "✔ 40 already downloaded") || !strings.Contains(all, "41. New") {
-		t.Errorf("missing count or download:\n%s", all)
+	if !strings.Contains(all, "41. New") || strings.Contains(all, "40 already downloaded") {
+		t.Errorf("want the download and no count line:\n%s", all)
 	}
 }
