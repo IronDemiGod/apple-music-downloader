@@ -64,8 +64,12 @@ type liveItem struct {
 }
 
 // recentFor is how long a finished track keeps its line, so tracks that are
-// skipped (already downloaded) or finish quickly are seen too.
-const recentFor = 3 * time.Second
+// skipped (already downloaded) or finish quickly are seen too; at most
+// maxRecent of them (the newest) are shown at once.
+const (
+	recentFor = 3 * time.Second
+	maxRecent = 3
+)
 
 type liveView struct {
 	title string
@@ -429,14 +433,28 @@ func (v *liveView) frame(width, height int) []string {
 		active = active[:room-1]
 		recent = nil
 	}
-	// Finished tracks take the room the active ones leave, newest first.
-	if free := room - len(active); len(recent) > free {
+	// Finished tracks take the room the active ones leave, newest first, at
+	// most maxRecent; already downloaded ones are counted in a line below.
+	free := room - len(active)
+	if existed > 0 {
+		free--
+	}
+	if free > maxRecent {
+		free = maxRecent
+	}
+	if free < 0 {
+		free = 0
+	}
+	if len(recent) > free {
 		sort.SliceStable(recent, func(i, j int) bool { return recent[i].endedAt.After(recent[j].endedAt) })
 		recent = recent[:free]
 	}
 	shown := append(active, recent...)
 	sort.SliceStable(shown, func(i, j int) bool { return shown[i].num < shown[j].num })
 	lines = append(lines, itemLines(shown, cols, now)...)
+	if existed > 0 && more == 0 {
+		lines = append(lines, fit(fmt.Sprintf("%s✔ %d already downloaded%s", ansiGreen, existed, ansiReset), cols))
+	}
 	if more > 0 {
 		lines = append(lines, fit(fmt.Sprintf("%s… %d more%s", ansiDim, more, ansiReset), cols))
 	}

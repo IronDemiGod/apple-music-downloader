@@ -244,3 +244,22 @@ func TestRenderLogsAboveBars(t *testing.T) {
 		t.Error("a line without its newline must wait")
 	}
 }
+
+// A mostly downloaded playlist: skipped tracks get at most maxRecent lines and
+// a count, not a line each.
+func TestFrameLimitsSkipped(t *testing.T) {
+	var items []liveItem
+	for i := 1; i <= 40; i++ {
+		items = append(items, liveItem{id: fmt.Sprint(i), num: i, name: fmt.Sprintf("Track %d", i), state: liveExists})
+	}
+	items = append(items, liveItem{num: 41, name: "New", state: liveDownloading, total: 10, done: 5})
+	v := testView(items...)
+	lines := v.frame(100, 50)
+	all := visible(strings.Join(lines, "\n"))
+	if len(lines) != 2+1+maxRecent+1 { // header, bar, the download, recent, the count
+		t.Fatalf("%d lines:\n%s", len(lines), all)
+	}
+	if !strings.Contains(all, "✔ 40 already downloaded") || !strings.Contains(all, "41. New") {
+		t.Errorf("missing count or download:\n%s", all)
+	}
+}
