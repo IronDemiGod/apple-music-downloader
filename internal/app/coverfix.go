@@ -114,14 +114,12 @@ type CoverFixOptions struct {
 	Cover    ArtSpec // the folder's cover.<ext> file
 	Embed    ArtSpec // the picture embedded in every track
 	DryRun   bool
-	Force    bool // rewrite tracks even when they already have the picture
-	Parallel int  // albums processed at once (<1 = 1)
+	Parallel int // albums processed at once (<1 = 1)
 }
 
 // CoverFixResult counts what RefreshCovers did.
 type CoverFixResult struct {
 	Refreshed, Skipped, Failed   int
-	TracksUnchanged              int // already had the picture, not rewritten
 	TracksEmbedded, TracksFailed int
 }
 
@@ -186,7 +184,6 @@ func (r *Runner) RefreshCovers(root, storefront, token string, opt CoverFixOptio
 		res.Failed += d.res.Failed
 		res.TracksEmbedded += d.res.TracksEmbedded
 		res.TracksFailed += d.res.TracksFailed
-		res.TracksUnchanged += d.res.TracksUnchanged
 	}
 	return res, err
 }
@@ -268,7 +265,7 @@ func (r *Runner) refreshAlbum(w io.Writer, dir, storefront, token string, opt Co
 		res.Failed++
 		return res
 	}
-	embedded, failed, unchanged := 0, 0, 0
+	embedded, failed := 0, 0
 	// FLAC can hold at most a 16 MB picture. When it is too large, the
 	// track is retried with a smaller PNG (see pngRetrySteps); the size
 	// that fits is then used for the album's other FLAC tracks too.
@@ -277,10 +274,6 @@ func (r *Runner) refreshAlbum(w io.Writer, dir, storefront, token string, opt Co
 		img, spec := embedImg, opt.Embed
 		if strings.EqualFold(filepath.Ext(tp), ".flac") {
 			img, spec = flacImg, flacSpec
-		}
-		if !opt.Force && alreadyEmbedded(tp, img) {
-			unchanged++
-			continue
 		}
 		err := embedPicture(tp, img, spec.mime())
 		var tooLarge *FLACPictureTooLargeError
@@ -297,11 +290,7 @@ func (r *Runner) refreshAlbum(w io.Writer, dir, storefront, token string, opt Co
 				break
 			}
 			img = smaller
-			if !opt.Force && alreadyEmbedded(tp, img) {
-				err = nil // already has this smaller picture from an earlier run
-			} else {
-				err = embedPicture(tp, img, spec.mime())
-			}
+			err = embedPicture(tp, img, spec.mime())
 			if err == nil {
 				flacImg, flacSpec = img, spec
 			}
@@ -318,34 +307,10 @@ func (r *Runner) refreshAlbum(w io.Writer, dir, storefront, token string, opt Co
 	}
 	res.TracksEmbedded += embedded
 	res.TracksFailed += failed
-	res.TracksUnchanged += unchanged
 
-	note := ""
-	if unchanged > 0 {
-		note = fmt.Sprintf(", %d already had it", unchanged)
-	}
-	fmt.Fprintf(w, "✔ %s: %s, embedded in %d/%d tracks%s (album found by %s)\n", dir, filepath.Base(newCover), embedded, len(trackPaths), note, via)
+	fmt.Fprintf(w, "✔ %s: %s, embedded in %d/%d tracks (album found by %s)\n", dir, filepath.Base(newCover), embedded, len(trackPaths), via)
 	res.Refreshed++
 	return res
-}
-
-// alreadyEmbedded reports whether a track's only embedded picture is exactly
-// img, so rewriting it would change nothing.
-func alreadyEmbedded(path string, img []byte) bool {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".flac":
-		ok, err := flacHasPicture(path, img)
-		return err == nil && ok
-	case ".m4a":
-		f, err := mp4tag.Open(path)
-		if err != nil {
-			return false
-		}
-		defer f.Close()
-		tags, err := f.Read()
-		return err == nil && len(tags.Pictures) == 1 && bytes.Equal(tags.Pictures[0].Data, img)
-	}
-	return false
 }
 
 // pngRetrySteps are the PNG sizes tried, largest first, when a picture is too

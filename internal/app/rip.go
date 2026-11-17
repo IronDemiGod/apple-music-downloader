@@ -3,9 +3,9 @@ package app
 import (
 	"amdl/internal/amp-api"
 	fairplayrip "amdl/internal/fairplay-rip"
+	"amdl/internal/fsutil"
 	defrag "amdl/internal/media/defrag"
 	"amdl/internal/media/lyrics"
-	"amdl/internal/fsutil"
 	"amdl/internal/model"
 	"amdl/internal/widevine-rip"
 	"amdl/internal/widevine-rip/runv5"

@@ -120,38 +120,3 @@ func TestNextPNGStep(t *testing.T) {
 		}
 	}
 }
-
-// flacHasPicture recognises a file that already has exactly the picture
-// (after setFLACPicture) and rejects other pictures, so coverfix can skip
-// rewriting unchanged tracks.
-func TestFLACHasPicture(t *testing.T) {
-	var f []byte
-	f = append(f, "fLaC"...)
-	f = append(f, flacBlock(0, false, make([]byte, 34))...)
-	f = append(f, flacBlock(6, false, []byte("old picture data"))...)
-	f = append(f, flacBlock(1, true, make([]byte, 10))...)
-	f = append(f, bytes.Repeat([]byte{0xff, 0xf8}, 100)...)
-	path := filepath.Join(t.TempDir(), "t.flac")
-	if err := os.WriteFile(path, f, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	var a, b bytes.Buffer
-	png.Encode(&a, image.NewRGBA(image.Rect(0, 0, 7, 5)))
-	png.Encode(&b, image.NewRGBA(image.Rect(0, 0, 8, 5)))
-
-	if ok, err := flacHasPicture(path, a.Bytes()); err != nil || ok {
-		t.Fatalf("before embedding: %v, %v; want false", ok, err)
-	}
-	if err := setFLACPicture(path, a.Bytes(), "image/png"); err != nil {
-		t.Fatal(err)
-	}
-	if ok, err := flacHasPicture(path, a.Bytes()); err != nil || !ok {
-		t.Fatalf("same picture: %v, %v; want true", ok, err)
-	}
-	if ok, _ := flacHasPicture(path, b.Bytes()); ok {
-		t.Fatal("a different picture must not match")
-	}
-	if !alreadyEmbedded(path, a.Bytes()) || alreadyEmbedded(path, b.Bytes()) {
-		t.Fatal("alreadyEmbedded disagrees with flacHasPicture")
-	}
-}
