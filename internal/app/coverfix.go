@@ -162,6 +162,7 @@ func (r *Runner) RefreshCovers(root, storefront, token string, opt CoverFixOptio
 	})
 	sort.Strings(dirs)
 	view := r.newCoverView(len(dirs))
+	var failures []string
 
 	type albumDone struct {
 		out string
@@ -194,10 +195,11 @@ func (r *Runner) RefreshCovers(root, storefront, token string, opt CoverFixOptio
 	}()
 	for i := range dirs {
 		d := <-results[i]
-		if view != nil {
-			view.log(d.out)
-		} else {
+		if view == nil {
 			fmt.Print(d.out)
+		} else if d.res.Failed > 0 || d.res.TracksFailed > 0 {
+			// With the live bars, only problems are printed (after the bars).
+			failures = append(failures, d.out)
 		}
 		res.Refreshed += d.res.Refreshed
 		res.Skipped += d.res.Skipped
@@ -206,6 +208,9 @@ func (r *Runner) RefreshCovers(root, storefront, token string, opt CoverFixOptio
 		res.TracksFailed += d.res.TracksFailed
 	}
 	view.finish()
+	for _, f := range failures {
+		fmt.Print(f)
+	}
 	return res, err
 }
 

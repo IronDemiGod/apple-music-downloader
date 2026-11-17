@@ -138,24 +138,16 @@ func (v *coverView) log(out string) {
 	v.mu.Unlock()
 }
 
-// finish prints the remaining log lines and removes the bars.
+// finish draws the final state (header and overall bar) and leaves it on
+// screen.
 func (v *coverView) finish() {
 	if v == nil {
 		return
 	}
 	close(v.stop)
 	<-v.done
-	v.mu.Lock()
-	var b bytes.Buffer
-	v.moveToTop(&b)
-	b.WriteString("\x1b[J")
-	for _, l := range v.logs {
-		b.WriteString(l + "\n")
-	}
-	b.WriteString("\x1b[?25h")
-	v.out.Write(b.Bytes())
-	v.logs, v.lines = nil, 0
-	v.mu.Unlock()
+	v.render()
+	io.WriteString(v.out, "\x1b[?25h")
 }
 
 func (v *coverView) moveToTop(b *bytes.Buffer) {
