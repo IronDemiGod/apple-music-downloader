@@ -681,6 +681,18 @@ func (r *Runner) ripAlbum(albumId string, token string, storefront string, media
 				}
 			}
 
+			if m3u8Url == "" {
+				// Apple has no ALAC/Atmos stream for this track; a normal
+				// download falls back to AAC 256 kbps through lite-server.
+				fmt.Println("Available Audio Formats:")
+				fmt.Println("------------------------")
+				fmt.Println("AAC             : AAC | 2 Channel | 256 Kbps (only this; downloaded through lite-server)")
+				fmt.Println("Lossless        : Not Available")
+				fmt.Println("Hi-Res Lossless : Not Available")
+				fmt.Println("Dolby Atmos     : Not Available")
+				fmt.Println("------------------------")
+				continue
+			}
 			_, _, err = r.extractMedia(m3u8Url, true)
 			if err != nil {
 				fmt.Printf("Failed to extract quality info for track %d: %v\n", trackNum, err)
@@ -939,6 +951,18 @@ func (r *Runner) ripPlaylist(playlistId string, token string, storefront string,
 				}
 			}
 
+			if m3u8Url == "" {
+				// Apple has no ALAC/Atmos stream for this track; a normal
+				// download falls back to AAC 256 kbps through lite-server.
+				fmt.Println("Available Audio Formats:")
+				fmt.Println("------------------------")
+				fmt.Println("AAC             : AAC | 2 Channel | 256 Kbps (only this; downloaded through lite-server)")
+				fmt.Println("Lossless        : Not Available")
+				fmt.Println("Hi-Res Lossless : Not Available")
+				fmt.Println("Dolby Atmos     : Not Available")
+				fmt.Println("------------------------")
+				continue
+			}
 			_, _, err = r.extractMedia(m3u8Url, true)
 			if err != nil {
 				fmt.Printf("Failed to extract quality info for track %d: %v\n", trackNum, err)
