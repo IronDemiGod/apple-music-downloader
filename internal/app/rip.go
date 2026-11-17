@@ -93,13 +93,21 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 	} else if r.Config.Media.GetM3u8Mode == "hires" && contains(track.Resp.Attributes.AudioTraits, "hi-res-lossless") {
 		needCheck = true
 	}
-	var EnhancedHls_m3u8 string
-	if needCheck && !needDlAacLc {
-		EnhancedHls_m3u8, _ = r.checkM3u8(track.ID, "song")
-		if strings.HasSuffix(EnhancedHls_m3u8, ".m3u8") {
-			track.DeviceM3u8 = EnhancedHls_m3u8
-			track.M3u8 = EnhancedHls_m3u8
+	// Asking lite-server for the hi-res stream takes a round trip to Apple, so
+	// it waits until the file is known not to exist yet, unless the file name
+	// needs the quality.
+	resolveM3u8 := func() {
+		if needCheck && !needDlAacLc {
+			EnhancedHls_m3u8, _ := r.checkM3u8(track.ID, "song")
+			if strings.HasSuffix(EnhancedHls_m3u8, ".m3u8") {
+				track.DeviceM3u8 = EnhancedHls_m3u8
+				track.M3u8 = EnhancedHls_m3u8
+			}
 		}
+	}
+	songFileQuality := strings.Contains(r.Config.Paths.SongFile, "Quality")
+	if songFileQuality {
+		resolveM3u8()
 	}
 	var Quality string
 	if strings.Contains(r.Config.Paths.SongFile, "Quality") {
@@ -226,6 +234,10 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 			r.State.AddedTracks = append(r.State.AddedTracks, added)
 			return
 		}
+	}
+
+	if !songFileQuality {
+		resolveM3u8()
 	}
 
 	//提前获取到的播放列表下track所在的专辑信息
@@ -704,117 +716,15 @@ func (r *Runner) ripAlbum(albumId string, token string, storefront string, media
 		}
 		return nil
 	}
-	var Codec string
-	if r.Flags.Atmos {
-		Codec = "ATMOS"
-	} else if r.Flags.AAC {
-		Codec = "AAC"
-	} else {
-		Codec = "ALAC"
-	}
+	Codec, singerFoldername, singerFolder, albumFolderName := r.albumFolderNames(meta, albumId, storefront, album.Language, token)
 	album.Codec = Codec
-	var singerFoldername string
-	if r.Config.Paths.ArtistFolder != "" {
-		if len(meta.Data[0].Relationships.Artists.Data) > 0 {
-			singerFoldername = strings.NewReplacer(
-				"{UrlArtistName}", r.LimitString(meta.Data[0].Attributes.ArtistName),
-				"{ArtistName}", r.LimitString(meta.Data[0].Attributes.ArtistName),
-				"{ArtistId}", meta.Data[0].Relationships.Artists.Data[0].ID,
-			).Replace(r.Config.Paths.ArtistFolder)
-		} else {
-			singerFoldername = strings.NewReplacer(
-				"{UrlArtistName}", r.LimitString(meta.Data[0].Attributes.ArtistName),
-				"{ArtistName}", r.LimitString(meta.Data[0].Attributes.ArtistName),
-				"{ArtistId}", "",
-			).Replace(r.Config.Paths.ArtistFolder)
-		}
-		if strings.HasSuffix(singerFoldername, ".") {
-			singerFoldername = strings.ReplaceAll(singerFoldername, ".", "")
-		}
-		singerFoldername = strings.TrimSpace(singerFoldername)
-		if r.live == nil {
-			fmt.Println(singerFoldername)
-		}
-	}
-	singerFolder := filepath.Join(r.Config.Paths.Alac, forbiddenNames.ReplaceAllString(singerFoldername, "_"))
-	if r.Flags.Atmos {
-		singerFolder = filepath.Join(r.Config.Paths.Atmos, forbiddenNames.ReplaceAllString(singerFoldername, "_"))
-	}
-	if r.Flags.AAC {
-		singerFolder = filepath.Join(r.Config.Paths.Aac, forbiddenNames.ReplaceAllString(singerFoldername, "_"))
+	if r.Config.Paths.ArtistFolder != "" && r.live == nil {
+		fmt.Println(singerFoldername)
 	}
 	if err := createDirectory(singerFolder); err != nil {
 		return err
 	}
 	album.SaveDir = singerFolder
-	var Quality string
-	if strings.Contains(r.Config.Paths.AlbumFolder, "Quality") {
-		if r.Flags.Atmos {
-			Quality = fmt.Sprintf("%dKbps", r.Config.Media.AtmosMax-2000)
-		} else if r.Flags.AAC && r.Config.Media.AacType == "aac-lc" {
-			Quality = "256Kbps"
-		} else {
-			manifest1, err := ampapi.GetSongResp(storefront, meta.Data[0].Relationships.Tracks.Data[0].ID, album.Language, token)
-			if err != nil {
-				r.sayln("Failed to get manifest.\n", err)
-			} else {
-				if manifest1.Data[0].Attributes.ExtendedAssetUrls.EnhancedHls == "" {
-					Codec = "AAC"
-					Quality = "256Kbps"
-				} else {
-					needCheck := false
-
-					if r.Config.Media.GetM3u8Mode == "all" {
-						needCheck = true
-					} else if r.Config.Media.GetM3u8Mode == "hires" && contains(meta.Data[0].Relationships.Tracks.Data[0].Attributes.AudioTraits, "hi-res-lossless") {
-						needCheck = true
-					}
-					var EnhancedHls_m3u8 string
-					if needCheck {
-						EnhancedHls_m3u8, _ = r.checkM3u8(meta.Data[0].Relationships.Tracks.Data[0].ID, "album")
-						if strings.HasSuffix(EnhancedHls_m3u8, ".m3u8") {
-							manifest1.Data[0].Attributes.ExtendedAssetUrls.EnhancedHls = EnhancedHls_m3u8
-						}
-					}
-					_, Quality, err = r.extractMedia(manifest1.Data[0].Attributes.ExtendedAssetUrls.EnhancedHls, true)
-					if err != nil {
-						r.sayln("Failed to extract quality from manifest.\n", err)
-					}
-				}
-			}
-		}
-	}
-	stringsToJoin := []string{}
-	if meta.Data[0].Attributes.IsAppleDigitalMaster || meta.Data[0].Attributes.IsMasteredForItunes {
-		if r.Config.Paths.AppleMaster != "" {
-			stringsToJoin = append(stringsToJoin, r.Config.Paths.AppleMaster)
-		}
-	}
-	if meta.Data[0].Attributes.ContentRating == "explicit" {
-		if r.Config.Paths.Explicit != "" {
-			stringsToJoin = append(stringsToJoin, r.Config.Paths.Explicit)
-		}
-	}
-	if meta.Data[0].Attributes.ContentRating == "clean" {
-		if r.Config.Paths.Clean != "" {
-			stringsToJoin = append(stringsToJoin, r.Config.Paths.Clean)
-		}
-	}
-	Tag_string := strings.Join(stringsToJoin, " ")
-	var albumFolderName string
-	albumFolderName = strings.NewReplacer(
-		"{ReleaseDate}", meta.Data[0].Attributes.ReleaseDate,
-		"{ReleaseYear}", releaseYear(meta.Data[0].Attributes.ReleaseDate),
-		"{ArtistName}", r.LimitString(meta.Data[0].Attributes.ArtistName),
-		"{AlbumName}", r.LimitString(meta.Data[0].Attributes.Name),
-		"{UPC}", meta.Data[0].Attributes.Upc,
-		"{RecordLabel}", meta.Data[0].Attributes.RecordLabel,
-		"{Copyright}", meta.Data[0].Attributes.Copyright,
-		"{AlbumId}", albumId,
-		"{Quality}", Quality,
-		"{Codec}", Codec,
-		"{Tag}", Tag_string,
-	).Replace(r.Config.Paths.AlbumFolder)
 
 	albumFolderPath, err := r.prepareCollectionFolder(singerFolder, albumFolderName)
 	if err != nil {
@@ -832,9 +742,15 @@ func (r *Runner) ripAlbum(albumId string, token string, storefront string, media
 			}
 		}
 	}
-	covPath, err := r.writeCover(albumFolderPath, "cover", meta.Data[0].Attributes.Artwork.URL)
-	if err != nil {
-		r.sayln("Failed to write cover.")
+	// An album folder that already has its cover keeps it (coverfix
+	// refreshes covers); downloading it again for every run made checking
+	// already downloaded tracks slow.
+	covPath := r.existingCover(albumFolderPath, "cover", meta.Data[0].Attributes.Artwork.URL)
+	if covPath == "" {
+		covPath, err = r.writeCover(albumFolderPath, "cover", meta.Data[0].Attributes.Artwork.URL)
+		if err != nil {
+			r.sayln("Failed to write cover.")
+		}
 	}
 	if r.Config.Metadata.Artwork.SaveAnimated {
 		r.saveAnimatedArtwork(
@@ -1272,6 +1188,114 @@ func (r *Runner) albumIDForSong(songId string, storefront string, token string) 
 		return "", errors.New("song response has no album")
 	}
 	return manifest.Data[0].Relationships.Albums.Data[0].ID, nil
+}
+
+// albumFolderNames works out an album's codec, artist folder name, artist
+// folder path and album folder name from its details and the config. It
+// touches nothing on disk; only an album-folder template with {Quality} makes
+// it ask the network.
+func (r *Runner) albumFolderNames(meta ampapi.AlbumResp, albumId, storefront, language, token string) (Codec, singerFoldername, singerFolder, albumFolderName string) {
+	if r.Flags.Atmos {
+		Codec = "ATMOS"
+	} else if r.Flags.AAC {
+		Codec = "AAC"
+	} else {
+		Codec = "ALAC"
+	}
+	if r.Config.Paths.ArtistFolder != "" {
+		if len(meta.Data[0].Relationships.Artists.Data) > 0 {
+			singerFoldername = strings.NewReplacer(
+				"{UrlArtistName}", r.LimitString(meta.Data[0].Attributes.ArtistName),
+				"{ArtistName}", r.LimitString(meta.Data[0].Attributes.ArtistName),
+				"{ArtistId}", meta.Data[0].Relationships.Artists.Data[0].ID,
+			).Replace(r.Config.Paths.ArtistFolder)
+		} else {
+			singerFoldername = strings.NewReplacer(
+				"{UrlArtistName}", r.LimitString(meta.Data[0].Attributes.ArtistName),
+				"{ArtistName}", r.LimitString(meta.Data[0].Attributes.ArtistName),
+				"{ArtistId}", "",
+			).Replace(r.Config.Paths.ArtistFolder)
+		}
+		if strings.HasSuffix(singerFoldername, ".") {
+			singerFoldername = strings.ReplaceAll(singerFoldername, ".", "")
+		}
+		singerFoldername = strings.TrimSpace(singerFoldername)
+	}
+	singerFolder = filepath.Join(r.Config.Paths.Alac, forbiddenNames.ReplaceAllString(singerFoldername, "_"))
+	if r.Flags.Atmos {
+		singerFolder = filepath.Join(r.Config.Paths.Atmos, forbiddenNames.ReplaceAllString(singerFoldername, "_"))
+	}
+	if r.Flags.AAC {
+		singerFolder = filepath.Join(r.Config.Paths.Aac, forbiddenNames.ReplaceAllString(singerFoldername, "_"))
+	}
+	var Quality string
+	if strings.Contains(r.Config.Paths.AlbumFolder, "Quality") {
+		if r.Flags.Atmos {
+			Quality = fmt.Sprintf("%dKbps", r.Config.Media.AtmosMax-2000)
+		} else if r.Flags.AAC && r.Config.Media.AacType == "aac-lc" {
+			Quality = "256Kbps"
+		} else {
+			manifest1, err := ampapi.GetSongResp(storefront, meta.Data[0].Relationships.Tracks.Data[0].ID, language, token)
+			if err != nil {
+				r.sayln("Failed to get manifest.\n", err)
+			} else {
+				if manifest1.Data[0].Attributes.ExtendedAssetUrls.EnhancedHls == "" {
+					Codec = "AAC"
+					Quality = "256Kbps"
+				} else {
+					needCheck := false
+
+					if r.Config.Media.GetM3u8Mode == "all" {
+						needCheck = true
+					} else if r.Config.Media.GetM3u8Mode == "hires" && contains(meta.Data[0].Relationships.Tracks.Data[0].Attributes.AudioTraits, "hi-res-lossless") {
+						needCheck = true
+					}
+					var EnhancedHls_m3u8 string
+					if needCheck {
+						EnhancedHls_m3u8, _ = r.checkM3u8(meta.Data[0].Relationships.Tracks.Data[0].ID, "album")
+						if strings.HasSuffix(EnhancedHls_m3u8, ".m3u8") {
+							manifest1.Data[0].Attributes.ExtendedAssetUrls.EnhancedHls = EnhancedHls_m3u8
+						}
+					}
+					_, Quality, err = r.extractMedia(manifest1.Data[0].Attributes.ExtendedAssetUrls.EnhancedHls, true)
+					if err != nil {
+						r.sayln("Failed to extract quality from manifest.\n", err)
+					}
+				}
+			}
+		}
+	}
+	stringsToJoin := []string{}
+	if meta.Data[0].Attributes.IsAppleDigitalMaster || meta.Data[0].Attributes.IsMasteredForItunes {
+		if r.Config.Paths.AppleMaster != "" {
+			stringsToJoin = append(stringsToJoin, r.Config.Paths.AppleMaster)
+		}
+	}
+	if meta.Data[0].Attributes.ContentRating == "explicit" {
+		if r.Config.Paths.Explicit != "" {
+			stringsToJoin = append(stringsToJoin, r.Config.Paths.Explicit)
+		}
+	}
+	if meta.Data[0].Attributes.ContentRating == "clean" {
+		if r.Config.Paths.Clean != "" {
+			stringsToJoin = append(stringsToJoin, r.Config.Paths.Clean)
+		}
+	}
+	Tag_string := strings.Join(stringsToJoin, " ")
+	albumFolderName = strings.NewReplacer(
+		"{ReleaseDate}", meta.Data[0].Attributes.ReleaseDate,
+		"{ReleaseYear}", releaseYear(meta.Data[0].Attributes.ReleaseDate),
+		"{ArtistName}", r.LimitString(meta.Data[0].Attributes.ArtistName),
+		"{AlbumName}", r.LimitString(meta.Data[0].Attributes.Name),
+		"{UPC}", meta.Data[0].Attributes.Upc,
+		"{RecordLabel}", meta.Data[0].Attributes.RecordLabel,
+		"{Copyright}", meta.Data[0].Attributes.Copyright,
+		"{AlbumId}", albumId,
+		"{Quality}", Quality,
+		"{Codec}", Codec,
+		"{Tag}", Tag_string,
+	).Replace(r.Config.Paths.AlbumFolder)
+	return
 }
 
 // formatRoot is the configured destination folder for the format being downloaded.

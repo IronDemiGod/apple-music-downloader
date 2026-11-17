@@ -62,15 +62,20 @@ func sanitizeFolderName(name string) string {
 }
 
 func (r *Runner) prepareCollectionFolder(base string, displayName string) (string, error) {
-	if strings.HasSuffix(displayName, ".") {
-		displayName = displayName[:len(displayName)-1]
-	}
-	displayName = strings.TrimSpace(displayName)
-	folderPath := filepath.Join(base, sanitizeFolderName(displayName))
+	folderPath := collectionFolderPath(base, displayName)
 	if err := createDirectory(folderPath); err != nil {
 		return "", err
 	}
 	return folderPath, nil
+}
+
+// collectionFolderPath is the folder prepareCollectionFolder creates.
+func collectionFolderPath(base, displayName string) string {
+	if strings.HasSuffix(displayName, ".") {
+		displayName = displayName[:len(displayName)-1]
+	}
+	displayName = strings.TrimSpace(displayName)
+	return filepath.Join(base, sanitizeFolderName(displayName))
 }
 
 func (r *Runner) saveM3UPlaylist(dir string, name string, startIdx int) {

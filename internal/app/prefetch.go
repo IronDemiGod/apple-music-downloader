@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -16,12 +17,12 @@ import (
 // artwork "original" the cover is a full-size PNG of 5-40 MB that Apple's
 // server renders on request. A playlist of one-song albums then queued a
 // track only every few seconds, so its downloads ran one at a time. A few
-// workers now fetch the next albums and covers while the current ones
-// download.
+// workers now fetch the next albums and covers (covers only for album folders
+// that have none yet) while the current ones download.
 
 // prefetchAhead is how many albums may be fetched ahead of the one being
 // queued (it bounds the covers held in the work folder).
-const prefetchAhead = 6
+const prefetchAhead = 12
 
 // coverCache holds downloaded covers by URL until they are used. The first
 // caller of a URL downloads it; others wait for that download.
@@ -136,7 +137,7 @@ func (r *Runner) startAlbumPrefetch(albumIDs []string, storefront, token string)
 		}
 	}()
 	lang := r.Config.General.Language
-	for w := 0; w < 3; w++ {
+	for w := 0; w < 6; w++ {
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
@@ -148,6 +149,15 @@ func (r *Runner) startAlbumPrefetch(albumIDs []string, storefront, token string)
 				resp, err := ampapi.PrefetchAlbum(storefront, albumIDs[i], lang, token)
 				if err != nil || len(resp.Data) == 0 {
 					continue
+				}
+				// An album folder that has its cover keeps it (see ripAlbum): no
+				// download. Known without the network unless the album folder
+				// name uses {Quality}.
+				if !strings.Contains(r.Config.Paths.AlbumFolder, "Quality") {
+					_, _, singerFolder, albumFolderName := pr.albumFolderNames(*resp, albumIDs[i], storefront, lang, token)
+					if pr.existingCover(collectionFolderPath(singerFolder, albumFolderName), "cover", resp.Data[0].Attributes.Artwork.URL) != "" {
+						continue
+					}
 				}
 				scratch := filepath.Join(dir, "album-"+strconv.Itoa(i))
 				if os.MkdirAll(scratch, 0o700) == nil {

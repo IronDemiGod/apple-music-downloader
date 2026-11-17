@@ -46,6 +46,29 @@ func pngArtworkURL(template, size string) string {
 	return parts[0] + size + rest + ".png"
 }
 
+// existingCover returns the cover already saved in dir under name for the
+// artwork format in use (for "original": the source's extension, or the PNG
+// saved when Apple refused the source), or "".
+func (r *Runner) existingCover(dir, name, url string) string {
+	var candidates []string
+	if f := r.Config.Metadata.Artwork.Format; f == "original" {
+		if parts := strings.Split(url, "/"); len(parts) >= 2 {
+			ext := parts[len(parts)-2]
+			candidates = append(candidates, name+"."+ext[strings.LastIndex(ext, ".")+1:])
+		}
+		candidates = append(candidates, name+".png")
+	} else {
+		candidates = append(candidates, name+"."+f)
+	}
+	for _, c := range candidates {
+		p := filepath.Join(dir, c)
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() && fi.Size() > 0 {
+			return p
+		}
+	}
+	return ""
+}
+
 // writeCoverFrom is writeCover that also reports, for artwork format
 // "original", whether the untouched source image was saved (true) or, because
 // Apple refused it, a full-size PNG (false). For the other formats it reports
