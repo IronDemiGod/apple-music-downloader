@@ -72,8 +72,8 @@ func TestFrameFitsWidth(t *testing.T) {
 	)
 	for _, width := range []int{40, 60, 80, 120} {
 		lines := v.frame(width, 50)
-		if len(lines) != 1+2*4 {
-			t.Fatalf("width %d: %d lines, want 9", width, len(lines))
+		if len(lines) != 3 { // header, overall bar, the one download
+			t.Fatalf("width %d: %d lines, want 3", width, len(lines))
 		}
 		for _, l := range lines {
 			if w := runewidth.StringWidth(visible(l)); w > width-1 {
@@ -82,10 +82,13 @@ func TestFrameFitsWidth(t *testing.T) {
 		}
 	}
 	lines := v.frame(100, 50)
-	for _, want := range []string{"1/4 done · 1 failed", "1 downloading", "02. Vivarium — ADO", "52%", "33.1 MB/63.8 MB", "✔ done · 64.2 MB in 4.1 s", "waiting", "✖ Failed to download"} {
+	for _, want := range []string{"1/4 songs · 1 failed", "1 downloading", "02. Vivarium — ADO", "52%", "33.1 MB/63.8 MB", "ALAC 24-bit/96 kHz"} {
 		if !strings.Contains(visible(strings.Join(lines, "\n")), want) {
 			t.Errorf("frame lacks %q:\n%s", want, visible(strings.Join(lines, "\n")))
 		}
+	}
+	if all := visible(strings.Join(lines, "\n")); strings.Contains(all, "Song Three") || strings.Contains(all, "Broken") {
+		t.Errorf("waiting and finished tracks must not be listed:\n%s", all)
 	}
 	if testing.Verbose() {
 		fmt.Println(strings.Join(lines, "\n") + ansiReset)
@@ -96,8 +99,8 @@ func TestFrameFoldsLongLists(t *testing.T) {
 	var items []liveItem
 	for i := 1; i <= 35; i++ {
 		st := liveDone
-		if i > 20 {
-			st = liveWaiting
+		if i > 5 {
+			st = liveDownloading
 		}
 		items = append(items, liveItem{num: i, name: fmt.Sprintf("Track %d", i), state: st})
 	}
@@ -107,8 +110,8 @@ func TestFrameFoldsLongLists(t *testing.T) {
 		t.Fatalf("%d lines do not fit a 24-line window", len(lines))
 	}
 	all := visible(strings.Join(lines, "\n"))
-	if !strings.Contains(all, "✔ 20 track(s) done") || !strings.Contains(all, "… 6 more track(s)") {
-		t.Errorf("expected a done summary and a more line:\n%s", all)
+	if !strings.Contains(all, "5/35 songs") || !strings.Contains(all, "… 10 more") {
+		t.Errorf("expected the song count and a more line:\n%s", all)
 	}
 }
 
@@ -119,15 +122,15 @@ func TestRenderRedrawsInPlace(t *testing.T) {
 	first := buf.Len()
 	buf.Reset()
 	v.render()
-	// The second frame moves the cursor up over the 5 lines of the first.
 	if buf.Len() != 0 {
 		t.Errorf("an unchanged frame must not be redrawn, got %q", buf.String())
 	}
 	v.items[0].state = liveDone
 	v.render()
-	// A changed frame moves the cursor up over the 5 lines of the first.
-	if !strings.HasPrefix(buf.String(), "\x1b[?2026h\x1b[5A") {
-		t.Errorf("changed frame does not start by moving up 5 lines: %q", buf.String()[:16])
+	// A changed frame moves the cursor up over the 2 lines of the first
+	// (header and overall bar; waiting tracks are not listed).
+	if !strings.HasPrefix(buf.String(), "\x1b[?2026h\x1b[2A") {
+		t.Errorf("changed frame does not start by moving up 2 lines: %q", buf.String()[:16])
 	}
 	if first == 0 {
 		t.Error("first frame is empty")

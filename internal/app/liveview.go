@@ -17,11 +17,14 @@ import (
 	"amdl/internal/model"
 )
 
-// Live progress list: while an album or playlist downloads, every track gets
-// two lines that are redrawn in place (like `docker pull`):
+// Live progress list, in the same style as coverfix's: while an album or
+// playlist downloads, a header with the song count, an overall bar, and one
+// line per track being downloaded or processed, redrawn in place:
 //
-//	01. Song name — Artist                              ALAC 24-bit/96 kHz
-//	    ███████████████░░░░░░░░░░░░░░░   52%  33.1/63.8 MB  17.2 MB/s
+//	── ADO — Vivarium · 3/12 songs · 3 downloading · 540 Mbit/s ─────────
+//	████████░░░░░░░░░░░░░░░░░░░░░░   27%   ~40 s left
+//	04. Song name — ADO   ██████████░░░░░░░░░░   52%  33.1 MB/63.8 MB  17.2 MB/s  ALAC 24-bit/96 kHz
+//	03. Other song — ADO  ████████████████████   converting to FLAC  ALAC 24-bit/96 kHz
 //
 // It is used only when stdout is a terminal (not with --no-live or --debug).
 // Downloads then run in child processes (dlworker.go) whose progress output
@@ -59,6 +62,7 @@ type liveItem struct {
 type liveView struct {
 	title string
 	out   io.Writer
+	start time.Time
 
 	mu    sync.Mutex
 	items []*liveItem
@@ -87,7 +91,7 @@ func (r *Runner) startLive(title string, tracks []liveItem) *liveView {
 	if !r.liveSupported() || len(tracks) == 0 {
 		return nil
 	}
-	v := &liveView{title: title, out: os.Stdout, stop: make(chan struct{}), done: make(chan struct{})}
+	v := &liveView{title: title, out: os.Stdout, start: time.Now(), stop: make(chan struct{}), done: make(chan struct{})}
 	for i := range tracks {
 		it := tracks[i]
 		v.items = append(v.items, &it)
@@ -196,148 +200,155 @@ const (
 	ansiCyan  = "\x1b[36m"
 )
 
-// frame builds the lines of one frame. Each line fits in width-1 columns so
-// the terminal never wraps it (wrapping would break the cursor movement), and
-// the frame fits in the window: when it would not, finished tracks are folded
-// into one line, then the rest is cut off with a "more" line.
+// frame builds the lines of one frame, in coverfix's style: a header with the
+// song count, an overall bar, then one line per track being downloaded or
+// processed (waiting and finished tracks are not listed). Each line fits in
+// width-1 columns so the terminal never wraps it (wrapping would break the
+// cursor movement), and the frame fits in the window.
 func (v *liveView) frame(width, height int) []string {
 	if width < 40 {
 		width = 40
 	}
 	cols := width - 1
-	var finished, failed, downloading int
-	var rate float64
 	now := time.Now()
+	var finished, failed, downloading, existed int
+	var rate, progress float64
+	var active []*liveItem
 	for _, it := range v.items {
 		switch it.state {
-		case liveDone, liveExists:
+		case liveDone:
 			finished++
+			progress++
+		case liveExists:
+			finished++
+			existed++
+			progress++
 		case liveFailed:
 			failed++
+			progress++
 		case liveDownloading:
 			downloading++
+			if it.total > 0 {
+				f := float64(it.done) / float64(it.total)
+				if f > 1 {
+					f = 1
+				}
+				progress += 0.9 * f // the rest is processing
+			}
 			if el := now.Sub(it.started).Seconds(); el > 0.3 {
 				rate += float64(it.done) / el
 			}
+			active = append(active, it)
+		case liveProcessing, liveConverting:
+			progress += 0.9
+			active = append(active, it)
 		}
 	}
-	header := fmt.Sprintf("%s%s%s · %d/%d done", ansiBold, v.title, ansiReset, finished, len(v.items))
+	total := len(v.items)
+
+	title := runewidth.Truncate(v.title, cols/2, "…")
+	head := fmt.Sprintf("── %s · %d/%d songs", title, finished, total)
 	if failed > 0 {
-		header += fmt.Sprintf(" · %s%d failed%s", ansiRed, failed, ansiReset)
+		head += fmt.Sprintf(" · %s%d failed%s%s", ansiRed, failed, ansiReset, ansiBold)
 	}
 	if downloading > 0 {
-		header += fmt.Sprintf(" · %d downloading · %.0f Mbit/s", downloading, rate*8/1e6)
+		head += fmt.Sprintf(" · %d downloading · %.0f Mbit/s", downloading, rate*8/1e6)
 	}
-	lines := []string{fit(header, cols)}
+	head += " "
+	if pad := cols - runewidth.StringWidth(visibleText(head)); pad > 0 {
+		head += strings.Repeat("─", pad)
+	}
+	lines := []string{fit(ansiBold+head+ansiReset, cols)}
 
-	shown := v.items
-	maxLines := height - 2 // header, and one spare line for the cursor
-	if maxLines < 4 {
-		maxLines = 4
+	frac := 0.0
+	if total > 0 {
+		frac = progress / float64(total)
 	}
-	if 2*len(shown) > maxLines-1 {
-		// Fold finished tracks into a summary line.
-		var rest []*liveItem
-		var ok int
-		for _, it := range v.items {
-			switch it.state {
-			case liveDone, liveExists:
-				ok++
-			default:
-				rest = append(rest, it) // failures stay visible too
-			}
-		}
-		if ok > 0 {
-			lines = append(lines, fit(fmt.Sprintf("     %s✔ %d track(s) done%s", ansiGreen, ok, ansiReset), cols))
-		}
-		shown = rest
+	overall := bar(frac, barWidth, ansiCyan) + fmt.Sprintf("  %3.0f%%", frac*100)
+	// Time left from the progress made in this run (tracks that already
+	// existed took no time).
+	if gained := progress - float64(existed); gained > 0.2 && frac < 1 && !v.start.IsZero() {
+		left := time.Duration(float64(now.Sub(v.start)) / gained * (float64(total) - progress))
+		overall += "   ~" + roughDur(left) + " left"
 	}
-	room := (maxLines - len(lines)) / 2
+	lines = append(lines, fit(overall, cols))
+
+	room := height - 1 - len(lines) // one spare line for the cursor
+	if room < 2 {
+		room = 2
+	}
 	more := 0
-	if len(shown) > room {
-		more = len(shown) - (room - 1)
-		shown = shown[:room-1]
+	if len(active) > room {
+		more = len(active) - (room - 1)
+		active = active[:room-1]
 	}
-	for _, it := range shown {
-		lines = append(lines, itemLines(it, cols, now)...)
-	}
+	lines = append(lines, itemLines(active, cols, now)...)
 	if more > 0 {
-		lines = append(lines, fit(fmt.Sprintf("     %s… %d more track(s)%s", ansiDim, more, ansiReset), cols))
+		lines = append(lines, fit(fmt.Sprintf("%s… %d more%s", ansiDim, more, ansiReset), cols))
 	}
 	return lines
 }
 
 const barWidth = 30
 
-func itemLines(it *liveItem, cols int, now time.Time) []string {
-	// Line 1: number, title — artist, quality on the right.
-	quality := it.quality
-	if quality == "" {
-		quality = "…"
-	}
-	left := fmt.Sprintf("%02d. %s", it.num, it.name)
-	if it.artist != "" {
-		left += " — " + it.artist
-	}
-	qw := runewidth.StringWidth(quality)
-	avail := cols - qw - 2
-	if avail < 10 {
-		avail = 10
-	}
-	left = runewidth.Truncate(left, avail, "…")
-	pad := cols - runewidth.StringWidth(left) - qw
-	if pad < 1 {
-		pad = 1
-	}
-	line1 := left + strings.Repeat(" ", pad) + ansiDim + quality + ansiReset
-
-	// Line 2: bar and status.
-	frac := 0.0
+// itemStatus is the bar fill and status text of a track being downloaded or
+// processed.
+func itemStatus(it *liveItem, now time.Time) (float64, string) {
+	f := 0.0
 	var status string
-	color := ""
 	switch it.state {
-	case liveWaiting:
-		status = ansiDim + "waiting" + ansiReset
 	case liveDownloading:
 		if it.total > 0 {
-			frac = float64(it.done) / float64(it.total)
-			status = fmt.Sprintf("%3.0f%%  %s/%s", frac*100, mb(it.done), mb(it.total))
+			f = float64(it.done) / float64(it.total)
+			status = fmt.Sprintf("%3.0f%%  %s/%s", f*100, mb(it.done), mb(it.total))
 		} else {
 			status = "starting…"
 		}
 		if el := now.Sub(it.started).Seconds(); el > 0.3 && it.done > 0 {
 			status += fmt.Sprintf("  %.1f MB/s", float64(it.done)/el/1e6)
 		}
-		color = ansiCyan
-	case liveProcessing, liveConverting:
-		frac = 1
+	default: // processing, converting
+		f = 1
 		status = it.step
-		color = ansiCyan
-	case liveDone:
-		frac = 1
-		status = fmt.Sprintf("%s✔ done%s", ansiGreen, ansiReset)
-		if it.downloadB > 0 {
-			status += fmt.Sprintf(" · %s in %.1f s", mb(it.downloadB), it.finished.Seconds())
-		}
-		if it.note != "" {
-			status += " · " + it.note
-		}
-		color = ansiGreen
-	case liveExists:
-		frac = 1
-		status = fmt.Sprintf("%s✔ already downloaded%s", ansiGreen, ansiReset)
-		color = ansiGreen
-	case liveFailed:
-		status = fmt.Sprintf("%s✖ %s%s", ansiRed, it.step, ansiReset)
-		color = ansiRed
 	}
-	filled := int(frac*barWidth + 0.5)
-	if filled > barWidth {
-		filled = barWidth
+	if it.quality != "" {
+		status += "  " + ansiDim + it.quality + ansiReset
 	}
-	bar := color + strings.Repeat("█", filled) + ansiReset + ansiDim + strings.Repeat("░", barWidth-filled) + ansiReset
-	line2 := fit("    "+bar+"  "+status, cols)
-	return []string{line1, line2}
+	return f, status
+}
+
+// itemLines draws the active tracks, one line each, with the names in one
+// column as wide as the longest status leaves room for (at most 2/5 of the
+// line), so the bars line up:
+//
+//  02. Vivarium — ADO   ██████████░░░░░░░░░░   52%  33.1 MB/63.8 MB  17.2 MB/s  ALAC 24-bit/96 kHz
+func itemLines(items []*liveItem, cols int, now time.Time) []string {
+	fracs := make([]float64, len(items))
+	statuses := make([]string, len(items))
+	widest := 0
+	for i, it := range items {
+		fracs[i], statuses[i] = itemStatus(it, now)
+		if w := runewidth.StringWidth(visibleText(statuses[i])); w > widest {
+			widest = w
+		}
+	}
+	nameW := cols - 24 - widest
+	if maxW := cols * 2 / 5; nameW > maxW {
+		nameW = maxW
+	}
+	if nameW < 16 {
+		nameW = 16
+	}
+	lines := make([]string, len(items))
+	for i, it := range items {
+		label := fmt.Sprintf("%02d. %s", it.num, it.name)
+		if it.artist != "" {
+			label += " — " + it.artist
+		}
+		label = runewidth.FillRight(runewidth.Truncate(label, nameW, "…"), nameW)
+		lines[i] = fit(label+"  "+bar(fracs[i], 20, ansiCyan)+"  "+statuses[i], cols)
+	}
+	return lines
 }
 
 func mb(n int64) string { return fmt.Sprintf("%.1f MB", float64(n)/1e6) }
