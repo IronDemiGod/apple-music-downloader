@@ -186,15 +186,10 @@ func main() {
 	var total app.CoverFixResult
 	for _, root := range roots {
 		fmt.Println("==>", root)
-		res, err := r.RefreshCovers(root, storefront, token, opt)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-		}
-		total.Refreshed += res.Refreshed
-		total.Skipped += res.Skipped
-		total.Failed += res.Failed
-		total.TracksEmbedded += res.TracksEmbedded
-		total.TracksFailed += res.TracksFailed
+	}
+	total, err = r.RefreshCovers(roots, storefront, token, opt)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
 	}
 	verb := "Albums done"
 	if dryRun {

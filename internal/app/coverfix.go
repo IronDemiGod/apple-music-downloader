@@ -133,16 +133,20 @@ type CoverFixResult struct {
 // old covers are only removed after the new one was saved, so a failed
 // download never leaves a folder without artwork. With DryRun nothing is
 // changed and nothing is looked up.
-func (r *Runner) RefreshCovers(root, storefront, token string, opt CoverFixOptions) (CoverFixResult, error) {
+func (r *Runner) RefreshCovers(roots []string, storefront, token string, opt CoverFixOptions) (CoverFixResult, error) {
 	var res CoverFixResult
 
 	// Find the folders first, then process up to opt.Parallel albums at once:
 	// one album's lookup and cover download overlap another's file rewrites.
 	// Each album's messages are printed as one block, in folder order.
-	// Only folders that hold audio files count as albums.
+	// Only folders that hold audio files count as albums. The albums of all
+	// roots go into one queue, so e.g. several artist folders share the
+	// --parallel slots instead of being done one artist after another.
 	var dirs []string
+	rootOf := map[string]string{} // album folder -> the root it was found in
 	seen := map[string]bool{}
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	var root string
+	walk := func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			fmt.Printf("✖ %s: %v\n", path, err)
 			res.Failed++
@@ -156,11 +160,19 @@ func (r *Runner) RefreshCovers(root, storefront, token string, opt CoverFixOptio
 			if dir := filepath.Dir(path); !seen[dir] {
 				seen[dir] = true
 				dirs = append(dirs, dir)
+				rootOf[dir] = root
 			}
 		}
 		return nil
-	})
-	sort.Strings(dirs)
+	}
+	var err error
+	for _, root = range roots {
+		start := len(dirs)
+		if werr := filepath.WalkDir(root, walk); werr != nil && err == nil {
+			err = werr
+		}
+		sort.Strings(dirs[start:])
+	}
 	view := r.newCoverView(len(dirs))
 	var failures []string
 
@@ -183,10 +195,7 @@ func (r *Runner) RefreshCovers(root, storefront, token string, opt CoverFixOptio
 			go func(i int, dir string) {
 				defer func() { <-slots }()
 				var out bytes.Buffer
-				name := dir
-				if rel, err := filepath.Rel(root, dir); err == nil && rel != "." {
-					name = filepath.ToSlash(rel)
-				}
+				name := albumLabel(rootOf[dir], dir, len(roots) > 1)
 				ar := r.refreshAlbum(&out, dir, storefront, token, opt, view.begin(i, name))
 				view.end(i, ar.Failed > 0)
 				results[i] <- albumDone{out.String(), ar}
@@ -345,6 +354,20 @@ func (r *Runner) refreshAlbum(w io.Writer, dir, storefront, token string, opt Co
 	fmt.Fprintf(w, "✔ %s: %s, embedded in %d/%d tracks (album found by %s)\n", dir, filepath.Base(newCover), embedded, len(trackPaths), via)
 	res.Refreshed++
 	return res
+}
+
+// albumLabel names an album folder for the progress bars: relative to the
+// root it was found in, or to the root's parent (so the artist shows) when
+// the root is the album itself or several roots were given.
+func albumLabel(root, dir string, manyRoots bool) string {
+	base := root
+	if manyRoots || filepath.Clean(root) == filepath.Clean(dir) {
+		base = filepath.Dir(root)
+	}
+	if rel, err := filepath.Rel(base, dir); err == nil && rel != "." {
+		return filepath.ToSlash(rel)
+	}
+	return dir
 }
 
 // pngRetrySteps are the PNG sizes tried, largest first, when a picture is too

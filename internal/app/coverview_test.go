@@ -55,3 +55,21 @@ func TestCoverViewLogsAboveBars(t *testing.T) {
 	nilView.end(0, true)
 	nilView.finish()
 }
+
+func TestAlbumLabel(t *testing.T) {
+	cases := []struct {
+		root, dir string
+		many      bool
+		want      string
+	}{
+		{"/m", "/m/ADO/Vivarium", false, "ADO/Vivarium"},
+		{"/m/ADO", "/m/ADO/Vivarium", false, "Vivarium"},
+		{"/m/ADO", "/m/ADO/Vivarium", true, "ADO/Vivarium"},
+		{"/m/ADO/Vivarium", "/m/ADO/Vivarium", false, "ADO/Vivarium"},
+	}
+	for _, c := range cases {
+		if got := albumLabel(c.root, c.dir, c.many); got != c.want {
+			t.Errorf("albumLabel(%q, %q, %v) = %q, want %q", c.root, c.dir, c.many, got, c.want)
+		}
+	}
+}
