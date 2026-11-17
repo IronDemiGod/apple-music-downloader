@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -59,7 +60,12 @@ type liveItem struct {
 	notes     []string      // messages printed after the list (failed tracks)
 	downloadB int64         // final size, for the "done" line
 	claimed   bool          // taken by a track (see itemFor)
+	endedAt   time.Time     // when the list first drew it finished (done, skipped, failed)
 }
+
+// recentFor is how long a finished track keeps its line, so tracks that are
+// skipped (already downloaded) or finish quickly are seen too.
+const recentFor = 3 * time.Second
 
 type liveView struct {
 	title string
@@ -344,8 +350,17 @@ func (v *liveView) frame(width, height int) []string {
 	now := time.Now()
 	var finished, failed, downloading, existed int
 	var rate, progress float64
-	var active []*liveItem
+	var active, recent []*liveItem
 	for _, it := range v.items {
+		switch it.state {
+		case liveDone, liveExists, liveFailed:
+			if it.endedAt.IsZero() {
+				it.endedAt = now
+			}
+			if now.Sub(it.endedAt) < recentFor {
+				recent = append(recent, it)
+			}
+		}
 		switch it.state {
 		case liveDone:
 			finished++
@@ -412,8 +427,16 @@ func (v *liveView) frame(width, height int) []string {
 	if len(active) > room {
 		more = len(active) - (room - 1)
 		active = active[:room-1]
+		recent = nil
 	}
-	lines = append(lines, itemLines(active, cols, now)...)
+	// Finished tracks take the room the active ones leave, newest first.
+	if free := room - len(active); len(recent) > free {
+		sort.SliceStable(recent, func(i, j int) bool { return recent[i].endedAt.After(recent[j].endedAt) })
+		recent = recent[:free]
+	}
+	shown := append(active, recent...)
+	sort.SliceStable(shown, func(i, j int) bool { return shown[i].num < shown[j].num })
+	lines = append(lines, itemLines(shown, cols, now)...)
 	if more > 0 {
 		lines = append(lines, fit(fmt.Sprintf("%s… %d more%s", ansiDim, more, ansiReset), cols))
 	}
@@ -424,10 +447,26 @@ const barWidth = 30
 
 // itemStatus is the bar fill and status text of a track being downloaded or
 // processed.
-func itemStatus(it *liveItem, now time.Time) (float64, string) {
+func itemStatus(it *liveItem, now time.Time) (float64, string, string) {
 	f := 0.0
 	var status string
+	color := ansiCyan
 	switch it.state {
+	case liveDone:
+		f, color = 1, ansiGreen
+		status = ansiGreen + "✔ done" + ansiReset
+		if it.downloadB > 0 {
+			status += fmt.Sprintf(" · %s in %.1f s", mb(it.downloadB), it.finished.Seconds())
+		}
+		if it.note != "" {
+			status += " · " + it.note
+		}
+	case liveExists:
+		f, color = 1, ansiGreen
+		status = ansiGreen + "✔ already downloaded" + ansiReset
+	case liveFailed:
+		color = ansiRed
+		status = ansiRed + "✖ " + it.step + ansiReset
 	case liveDownloading:
 		if it.total > 0 {
 			f = float64(it.done) / float64(it.total)
@@ -445,7 +484,7 @@ func itemStatus(it *liveItem, now time.Time) (float64, string) {
 	if it.quality != "" {
 		status += "  " + ansiDim + it.quality + ansiReset
 	}
-	return f, status
+	return f, status, color
 }
 
 // itemLines draws the active tracks, one line each, with the names in one
@@ -456,12 +495,18 @@ func itemStatus(it *liveItem, now time.Time) (float64, string) {
 func itemLines(items []*liveItem, cols int, now time.Time) []string {
 	fracs := make([]float64, len(items))
 	statuses := make([]string, len(items))
+	colors := make([]string, len(items))
 	widest := 0
 	for i, it := range items {
-		fracs[i], statuses[i] = itemStatus(it, now)
+		fracs[i], statuses[i], colors[i] = itemStatus(it, now)
 		if w := runewidth.StringWidth(visibleText(statuses[i])); w > widest {
 			widest = w
 		}
+	}
+	// A long status (a failure reason) is cut at the line's end rather
+	// than squeezing the names.
+	if maxStatus := cols / 2; widest > maxStatus {
+		widest = maxStatus
 	}
 	nameW := cols - 24 - widest
 	if maxW := cols * 2 / 5; nameW > maxW {
@@ -477,7 +522,7 @@ func itemLines(items []*liveItem, cols int, now time.Time) []string {
 			label += " — " + it.artist
 		}
 		label = runewidth.FillRight(runewidth.Truncate(label, nameW, "…"), nameW)
-		lines[i] = fit(label+"  "+bar(fracs[i], 20, ansiCyan)+"  "+statuses[i], cols)
+		lines[i] = fit(label+"  "+bar(fracs[i], 20, colors[i])+"  "+statuses[i], cols)
 	}
 	return lines
 }
