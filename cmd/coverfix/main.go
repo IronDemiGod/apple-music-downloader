@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -37,6 +38,11 @@ FORMAT
 OPTIONS
   -n, --dry-run      show what would be changed; change nothing, look nothing up
   -j, --parallel N   albums processed at once (default 4)
+      --in FOLDER    the FOLDER arguments are names inside FOLDER; several may be
+                     given in one argument, separated by commas:
+                       coverfix --cover=png --embed=png --in "C:/Music" "ADO,Pink Floyd,King Gnu"
+                     A name that contains a comma itself is used whole when that
+                     folder exists. Without FOLDER arguments, all of FOLDER is done.
       --no-live      plain output instead of the live progress bars
   -c, --config FILE  amdl config to read proxy, storefront, language and music
                      folders from (default: config.yaml)
@@ -74,7 +80,7 @@ EXAMPLES
 `
 
 func main() {
-	var configFile, storefront, coverArg, embedArg string
+	var configFile, storefront, coverArg, embedArg, inDir string
 	var dryRun, noLive bool
 	var parallel int
 	flags := pflag.NewFlagSet("coverfix", pflag.ContinueOnError)
@@ -84,6 +90,7 @@ func main() {
 	flags.StringVar(&storefront, "storefront", "", "storefront to look albums up in")
 	flags.BoolVarP(&dryRun, "dry-run", "n", false, "only show what would be changed")
 	flags.IntVarP(&parallel, "parallel", "j", 4, "albums processed at once")
+	flags.StringVar(&inDir, "in", "", "parent folder of the FOLDER arguments (comma-separated names allowed)")
 	flags.BoolVar(&noLive, "no-live", false, "plain output instead of the live progress bars")
 	flags.Usage = func() { fmt.Fprint(os.Stdout, helpText) }
 	if err := flags.Parse(os.Args[1:]); err != nil {
@@ -128,6 +135,22 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(2)
+	}
+	if inDir != "" {
+		cleaned, err := cleanFolderArgs([]string{inDir}, runtime.GOOS == "windows")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error: --in", err)
+			os.Exit(2)
+		}
+		var missing []string
+		roots, missing = resolveIn(cleaned[0], roots)
+		for _, m := range missing {
+			fmt.Fprintf(os.Stderr, "warning: no folder %q in %s, skipped\n", m, cleaned[0])
+		}
+		if len(roots) == 0 {
+			fmt.Fprintln(os.Stderr, "error: none of the given folders exist in", cleaned[0])
+			os.Exit(1)
+		}
 	}
 	if len(roots) == 0 {
 		for _, p := range []string{cfg.Paths.Alac, cfg.Paths.Atmos, cfg.Paths.Aac} {
@@ -189,6 +212,49 @@ func main() {
 // final \" is an escaped quote, so the folder arrives as C:\Music\Album".
 // Windows names cannot contain '"', so on Windows a trailing quote is dropped
 // and any other quote is reported instead of being looked up as a folder.
+// resolveIn turns names given with --in into folders inside base. An argument
+// that is a folder inside base (or an absolute path) is used as is; otherwise
+// it is split on commas, so "ADO,Pink Floyd, King Gnu" names three folders.
+// Without names, base itself is returned. missing lists names not found.
+func resolveIn(base string, names []string) (dirs, missing []string) {
+	if len(names) == 0 {
+		return []string{base}, nil
+	}
+	isDir := func(p string) bool {
+		fi, err := os.Stat(p)
+		return err == nil && fi.IsDir()
+	}
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		p := name
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(base, name)
+		}
+		if isDir(p) {
+			dirs = append(dirs, p)
+		} else {
+			missing = append(missing, name)
+		}
+	}
+	for _, a := range names {
+		whole := a
+		if !filepath.IsAbs(whole) {
+			whole = filepath.Join(base, a)
+		}
+		if isDir(whole) || !strings.Contains(a, ",") {
+			add(a)
+			continue
+		}
+		for _, part := range strings.Split(a, ",") {
+			add(part)
+		}
+	}
+	return dirs, missing
+}
+
 func cleanFolderArgs(args []string, windows bool) ([]string, error) {
 	if !windows {
 		return args, nil
