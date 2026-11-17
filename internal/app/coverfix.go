@@ -364,6 +364,9 @@ func albumLabel(root, dir string, manyRoots bool) string {
 	if manyRoots || filepath.Clean(root) == filepath.Clean(dir) {
 		base = filepath.Dir(root)
 	}
+	if filepath.Clean(root) == filepath.Clean(dir) {
+		base = filepath.Dir(base) // an album folder given directly: Artist/Album
+	}
 	if rel, err := filepath.Rel(base, dir); err == nil && rel != "." {
 		return filepath.ToSlash(rel)
 	}
