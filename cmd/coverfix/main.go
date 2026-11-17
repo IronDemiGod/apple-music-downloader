@@ -21,12 +21,13 @@ import (
 const helpText = `coverfix - redo the album covers of an amdl music library
 
 USAGE
-  coverfix --cover FORMAT --embed FORMAT [OPTIONS] [FOLDER ...]
+  coverfix [--cover FORMAT] [--embed FORMAT] [OPTIONS] [FOLDER ...]
   (every option takes its value after a space or an =: --embed png, --embed=png)
 
-REQUIRED
+WHAT TO REDO (one or both)
   --cover FORMAT     the cover file saved in each album folder (cover.jpg / cover.png)
   --embed FORMAT     the picture embedded in every track (.flac and .m4a)
+  Only --cover: the tracks are not touched. Only --embed: the cover files stay.
 
 FORMAT
   jpg or png, optionally followed by a resolution from 100 to 10000:
@@ -103,20 +104,25 @@ func main() {
 		os.Exit(2)
 	}
 
-	if coverArg == "" || embedArg == "" {
-		fmt.Fprintln(os.Stderr, "error: --cover and --embed are both required, e.g. --cover png --embed jpg3000")
+	if coverArg == "" && embedArg == "" {
+		fmt.Fprintln(os.Stderr, "error: give --cover, --embed or both, e.g. --cover png --embed jpg3000")
 		fmt.Fprintln(os.Stderr, "Run 'coverfix --help' for usage.")
 		os.Exit(2)
 	}
-	coverSpec, err := app.ParseArtSpec(coverArg)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error: --cover", err)
-		os.Exit(2)
+	// A missing --cover or --embed means: leave that part alone.
+	var coverSpec, embedSpec app.ArtSpec
+	var err error
+	if coverArg != "" {
+		if coverSpec, err = app.ParseArtSpec(coverArg); err != nil {
+			fmt.Fprintln(os.Stderr, "error: --cover", err)
+			os.Exit(2)
+		}
 	}
-	embedSpec, err := app.ParseArtSpec(embedArg)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error: --embed", err)
-		os.Exit(2)
+	if embedArg != "" {
+		if embedSpec, err = app.ParseArtSpec(embedArg); err != nil {
+			fmt.Fprintln(os.Stderr, "error: --embed", err)
+			os.Exit(2)
+		}
 	}
 
 	cfg := config.Default()
@@ -179,7 +185,13 @@ func main() {
 		}
 	}
 
-	fmt.Printf("cover: %s  |  embed: %s\n", coverSpec, embedSpec)
+	describeSpec := func(s app.ArtSpec, given bool) string {
+		if !given {
+			return "left alone"
+		}
+		return s.String()
+	}
+	fmt.Printf("cover: %s  |  embed: %s\n", describeSpec(coverSpec, coverArg != ""), describeSpec(embedSpec, embedArg != ""))
 	opt := app.CoverFixOptions{Cover: coverSpec, Embed: embedSpec, DryRun: dryRun, Parallel: parallel}
 	r := app.NewRunner(cfg)
 	r.Flags.NoLive = noLive

@@ -111,8 +111,8 @@ func (a ArtSpec) url(template string) string {
 
 // CoverFixOptions controls RefreshCovers.
 type CoverFixOptions struct {
-	Cover    ArtSpec // the folder's cover.<ext> file
-	Embed    ArtSpec // the picture embedded in every track
+	Cover    ArtSpec // the folder's cover.<ext> file; zero value: leave it alone
+	Embed    ArtSpec // the picture embedded in every track; zero value: leave them alone
 	DryRun   bool
 	Parallel int // albums processed at once (<1 = 1)
 }
@@ -261,8 +261,16 @@ func (r *Runner) refreshAlbum(w io.Writer, dir, storefront, token string, opt Co
 		return res
 	}
 
+	doCover, doEmbed := opt.Cover.Format != "", opt.Embed.Format != ""
 	if opt.DryRun {
-		fmt.Fprintf(w, "• %s: would replace %s with cover.%s, and re-embed %d tracks\n", dir, describe(oldCovers), opt.Cover.Format, len(trackPaths))
+		var parts []string
+		if doCover {
+			parts = append(parts, fmt.Sprintf("replace %s with cover.%s", describe(oldCovers), opt.Cover.Format))
+		}
+		if doEmbed {
+			parts = append(parts, fmt.Sprintf("re-embed %d tracks", len(trackPaths)))
+		}
+		fmt.Fprintf(w, "• %s: would %s\n", dir, strings.Join(parts, ", and "))
 		res.Refreshed++
 		return res
 	}
@@ -275,30 +283,43 @@ func (r *Runner) refreshAlbum(w io.Writer, dir, storefront, token string, opt Co
 		return res
 	}
 
-	p.step("downloading the cover")
-	newCover, err := saveArtwork(filepath.Join(dir, "cover."+opt.Cover.Format), opt.Cover.url(template))
-	if err != nil {
-		fmt.Fprintf(w, "✖ %s: cover download failed: %v (kept existing covers)\n", dir, err)
-		res.Failed++
-		return res
+	newCover := ""
+	if doCover {
+		p.step("downloading the cover")
+		newCover, err = saveArtwork(filepath.Join(dir, "cover."+opt.Cover.Format), opt.Cover.url(template))
+		if err != nil {
+			fmt.Fprintf(w, "✖ %s: cover download failed: %v (kept existing covers)\n", dir, err)
+			res.Failed++
+			return res
+		}
+		for _, old := range oldCovers {
+			if filepath.Clean(old) == filepath.Clean(newCover) {
+				continue
+			}
+			if err := os.Remove(old); err != nil && !os.IsNotExist(err) {
+				fmt.Fprintf(w, "  could not remove %s: %v\n", old, err)
+			}
+		}
 	}
-	for _, old := range oldCovers {
-		if filepath.Clean(old) == filepath.Clean(newCover) {
-			continue
-		}
-		if err := os.Remove(old); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(w, "  could not remove %s: %v\n", old, err)
-		}
+	if !doEmbed {
+		fmt.Fprintf(w, "✔ %s: %s (embedded pictures left alone; album found by %s)\n", dir, filepath.Base(newCover), via)
+		res.Refreshed++
+		return res
 	}
 
 	var embedImg []byte
-	if opt.Embed == opt.Cover {
+	if doCover && opt.Embed == opt.Cover {
 		embedImg, err = os.ReadFile(newCover)
 	} else {
+		p.step("downloading the picture to embed")
 		embedImg, err = fetchArtwork(opt.Embed.url(template))
 	}
 	if err != nil {
-		fmt.Fprintf(w, "✖ %s: cover saved, but embed image download failed: %v\n", dir, err)
+		what := "embed image download failed"
+		if doCover {
+			what = "cover saved, but " + what
+		}
+		fmt.Fprintf(w, "✖ %s: %s: %v\n", dir, what, err)
 		res.Failed++
 		return res
 	}
@@ -351,7 +372,11 @@ func (r *Runner) refreshAlbum(w io.Writer, dir, storefront, token string, opt Co
 	res.TracksEmbedded += embedded
 	res.TracksFailed += failed
 
-	fmt.Fprintf(w, "✔ %s: %s, embedded in %d/%d tracks (album found by %s)\n", dir, filepath.Base(newCover), embedded, len(trackPaths), via)
+	coverNote := "cover file left alone"
+	if doCover {
+		coverNote = filepath.Base(newCover)
+	}
+	fmt.Fprintf(w, "✔ %s: %s, embedded in %d/%d tracks (album found by %s)\n", dir, coverNote, embedded, len(trackPaths), via)
 	res.Refreshed++
 	return res
 }
