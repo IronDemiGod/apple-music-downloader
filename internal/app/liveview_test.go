@@ -216,3 +216,22 @@ func TestItemForByID(t *testing.T) {
 	}
 	v.failItem("333", "x") // unknown ID: nothing happens
 }
+
+// Output printed while the list is shown goes above the bars, and the bars
+// are redrawn below it instead of moving down a line per print.
+func TestRenderLogsAboveBars(t *testing.T) {
+	v := testView(liveItem{num: 1, name: "One", state: liveWaiting})
+	v.render()
+	buf := v.out.(*bytes.Buffer)
+	buf.Reset()
+	v.addOutput([]byte("ADO\npartial"))
+	v.render()
+	out := buf.String()
+	// Up over the 2 bar lines, the log line, then the 2 bar lines again.
+	if !strings.HasPrefix(out, "\x1b[?2026h\x1b[2A\rADO\x1b[K\n") || strings.Count(out, "\n") != 3 {
+		t.Errorf("unexpected frame: %q", out)
+	}
+	if strings.Contains(out, "partial") {
+		t.Error("a line without its newline must wait")
+	}
+}

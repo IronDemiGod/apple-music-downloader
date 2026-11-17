@@ -63,8 +63,18 @@ type liveItem struct {
 
 type liveView struct {
 	title string
-	out   io.Writer
+	out   io.Writer // the terminal
+	fd    int       // its file descriptor, for the window size
 	start time.Time
+
+	// While the list is shown, os.Stdout is a pipe: anything else printed
+	// (amdl's own messages) is shown as lines above the bars, as coverfix
+	// does, instead of breaking the redraw.
+	realStdout *os.File
+	pipeW      *os.File
+	readDone   chan struct{}
+	logs       []string // captured lines not yet drawn
+	partial    []byte   // a captured line without its newline yet
 
 	mu    sync.Mutex
 	items []*liveItem
@@ -93,12 +103,13 @@ func (r *Runner) startLive(title string, tracks []liveItem) *liveView {
 	if !r.liveSupported() || len(tracks) == 0 {
 		return nil
 	}
-	v := &liveView{title: title, out: os.Stdout, start: time.Now(), stop: make(chan struct{}), done: make(chan struct{})}
+	v := &liveView{title: title, out: os.Stdout, fd: int(os.Stdout.Fd()), start: time.Now(), stop: make(chan struct{}), done: make(chan struct{})}
 	for i := range tracks {
 		it := tracks[i]
 		v.items = append(v.items, &it)
 	}
 	io.WriteString(v.out, "\x1b[?25l") // hide the cursor while redrawing
+	v.captureStdout()
 	v.render()
 	go func() {
 		defer close(v.done)
@@ -114,6 +125,66 @@ func (r *Runner) startLive(title string, tracks []liveItem) *liveView {
 		}
 	}()
 	return v
+}
+
+// captureStdout points os.Stdout at a pipe whose lines are shown above the
+// bars. Without it the list is still drawn, but stray prints break it.
+func (v *liveView) captureStdout() {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return
+	}
+	v.realStdout, v.pipeW = os.Stdout, pw
+	v.readDone = make(chan struct{})
+	os.Stdout = pw
+	go func() {
+		defer close(v.readDone)
+		defer pr.Close()
+		buf := make([]byte, 4096)
+		for {
+			n, err := pr.Read(buf)
+			if n > 0 {
+				v.addOutput(buf[:n])
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+}
+
+// addOutput splits captured output into lines for the log above the bars.
+func (v *liveView) addOutput(p []byte) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	for _, c := range p {
+		switch c {
+		case '\n':
+			v.logs = append(v.logs, strings.TrimRight(string(v.partial), "\r"))
+			v.partial = v.partial[:0]
+		default:
+			if len(v.partial) < 4096 {
+				v.partial = append(v.partial, c)
+			}
+		}
+	}
+}
+
+// releaseStdout gives os.Stdout back and keeps what was still in the pipe.
+func (v *liveView) releaseStdout() {
+	if v.pipeW == nil {
+		return
+	}
+	os.Stdout = v.realStdout
+	v.pipeW.Close()
+	<-v.readDone
+	v.mu.Lock()
+	if len(v.partial) > 0 {
+		v.logs = append(v.logs, string(v.partial))
+		v.partial = nil
+	}
+	v.mu.Unlock()
+	v.pipeW = nil
 }
 
 // item returns the list entry for track number num (nil if not listed).
@@ -196,6 +267,7 @@ func (v *liveView) finish() {
 	}
 	close(v.stop)
 	<-v.done
+	v.releaseStdout()
 	v.render()
 	io.WriteString(v.out, "\x1b[?25h") // show the cursor again
 }
@@ -205,12 +277,12 @@ func (v *liveView) render() {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	width, height := 100, 40
-	if w, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil {
+	if w, h, err := term.GetSize(v.fd); err == nil {
 		width, height = w, h
 	}
 	lines := v.frame(width, height)
 	key := strings.Join(lines, "\n")
-	if key == v.last && v.lines == len(lines) {
+	if len(v.logs) == 0 && key == v.last && v.lines == len(lines) {
 		return // nothing changed
 	}
 	v.last = key
@@ -225,16 +297,24 @@ func (v *liveView) render() {
 	if v.lines > 0 {
 		fmt.Fprintf(&b, "\x1b[%dA", v.lines) // back to the first line of the last frame
 	}
+	// Captured lines go where the bars were, scrolling up as a log; the
+	// bars follow them.
+	for _, l := range v.logs {
+		b.WriteString("\r" + l + "\x1b[K\n")
+	}
+	written := len(v.logs)
+	v.logs = nil
 	for _, l := range lines {
 		b.WriteString("\r")
 		b.WriteString(l)
 		b.WriteString("\x1b[K\n")
 	}
 	// Clear lines left over from a taller previous frame.
-	for i := len(lines); i < v.lines; i++ {
+	written += len(lines)
+	for i := written; i < v.lines; i++ {
 		b.WriteString("\r\x1b[K\n")
 	}
-	if extra := v.lines - len(lines); extra > 0 {
+	if extra := v.lines - written; extra > 0 {
 		fmt.Fprintf(&b, "\x1b[%dA", extra)
 	}
 	b.WriteString("\x1b[?2026l")

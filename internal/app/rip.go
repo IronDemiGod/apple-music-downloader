@@ -732,7 +732,9 @@ func (r *Runner) ripAlbum(albumId string, token string, storefront string, media
 			singerFoldername = strings.ReplaceAll(singerFoldername, ".", "")
 		}
 		singerFoldername = strings.TrimSpace(singerFoldername)
-		fmt.Println(singerFoldername)
+		if r.live == nil {
+			fmt.Println(singerFoldername)
+		}
 	}
 	singerFolder := filepath.Join(r.Config.Paths.Alac, forbiddenNames.ReplaceAllString(singerFoldername, "_"))
 	if r.Flags.Atmos {
@@ -754,7 +756,7 @@ func (r *Runner) ripAlbum(albumId string, token string, storefront string, media
 		} else {
 			manifest1, err := ampapi.GetSongResp(storefront, meta.Data[0].Relationships.Tracks.Data[0].ID, album.Language, token)
 			if err != nil {
-				fmt.Println("Failed to get manifest.\n", err)
+				r.sayln("Failed to get manifest.\n", err)
 			} else {
 				if manifest1.Data[0].Attributes.ExtendedAssetUrls.EnhancedHls == "" {
 					Codec = "AAC"
@@ -776,7 +778,7 @@ func (r *Runner) ripAlbum(albumId string, token string, storefront string, media
 					}
 					_, Quality, err = r.extractMedia(manifest1.Data[0].Attributes.ExtendedAssetUrls.EnhancedHls, true)
 					if err != nil {
-						fmt.Println("Failed to extract quality from manifest.\n", err)
+						r.sayln("Failed to extract quality from manifest.\n", err)
 					}
 				}
 			}
