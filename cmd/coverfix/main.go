@@ -36,6 +36,9 @@ FORMAT
 
 OPTIONS
   -n, --dry-run      show what would be changed; change nothing, look nothing up
+  -j, --parallel N   albums processed at once (default 4)
+      --force        rewrite tracks even when they already have exactly that picture
+                     (by default they are left untouched, so re-runs are quick)
   -c, --config FILE  amdl config to read proxy, storefront, language and music
                      folders from (default: config.yaml)
       --storefront CC  storefront to look albums up in (default: the config's
@@ -73,13 +76,16 @@ EXAMPLES
 
 func main() {
 	var configFile, storefront, coverArg, embedArg string
-	var dryRun bool
+	var dryRun, force bool
+	var parallel int
 	flags := pflag.NewFlagSet("coverfix", pflag.ContinueOnError)
 	flags.StringVar(&coverArg, "cover", "", "format of the folder's cover file")
 	flags.StringVar(&embedArg, "embed", "", "format of the picture embedded in every track")
 	flags.StringVarP(&configFile, "config", "c", "config.yaml", "amdl config file")
 	flags.StringVar(&storefront, "storefront", "", "storefront to look albums up in")
 	flags.BoolVarP(&dryRun, "dry-run", "n", false, "only show what would be changed")
+	flags.IntVarP(&parallel, "parallel", "j", 4, "albums processed at once")
+	flags.BoolVar(&force, "force", false, "rewrite tracks that already have the picture")
 	flags.Usage = func() { fmt.Fprint(os.Stdout, helpText) }
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		if errors.Is(err, pflag.ErrHelp) {
@@ -151,7 +157,7 @@ func main() {
 	}
 
 	fmt.Printf("cover: %s  |  embed: %s\n", coverSpec, embedSpec)
-	opt := app.CoverFixOptions{Cover: coverSpec, Embed: embedSpec, DryRun: dryRun}
+	opt := app.CoverFixOptions{Cover: coverSpec, Embed: embedSpec, DryRun: dryRun, Force: force, Parallel: parallel}
 	r := app.NewRunner(cfg)
 	var total app.CoverFixResult
 	for _, root := range roots {
@@ -165,6 +171,7 @@ func main() {
 		total.Failed += res.Failed
 		total.TracksEmbedded += res.TracksEmbedded
 		total.TracksFailed += res.TracksFailed
+		total.TracksUnchanged += res.TracksUnchanged
 	}
 	verb := "Albums done"
 	if dryRun {
@@ -172,7 +179,7 @@ func main() {
 	}
 	fmt.Printf("\n%s: %d  |  Skipped: %d  |  Failed: %d\n", verb, total.Refreshed, total.Skipped, total.Failed)
 	if !dryRun {
-		fmt.Printf("Tracks embedded: %d  |  Track errors: %d\n", total.TracksEmbedded, total.TracksFailed)
+		fmt.Printf("Tracks embedded: %d  |  Already had it: %d  |  Track errors: %d\n", total.TracksEmbedded, total.TracksUnchanged, total.TracksFailed)
 	}
 	if total.Failed > 0 || total.TracksFailed > 0 {
 		os.Exit(1)

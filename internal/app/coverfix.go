@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -110,14 +111,17 @@ func (a ArtSpec) url(template string) string {
 
 // CoverFixOptions controls RefreshCovers.
 type CoverFixOptions struct {
-	Cover  ArtSpec // the folder's cover.<ext> file
-	Embed  ArtSpec // the picture embedded in every track
-	DryRun bool
+	Cover    ArtSpec // the folder's cover.<ext> file
+	Embed    ArtSpec // the picture embedded in every track
+	DryRun   bool
+	Force    bool // rewrite tracks even when they already have the picture
+	Parallel int  // albums processed at once (<1 = 1)
 }
 
 // CoverFixResult counts what RefreshCovers did.
 type CoverFixResult struct {
 	Refreshed, Skipped, Failed   int
+	TracksUnchanged              int // already had the picture, not rewritten
 	TracksEmbedded, TracksFailed int
 }
 
@@ -134,135 +138,214 @@ type CoverFixResult struct {
 func (r *Runner) RefreshCovers(root, storefront, token string, opt CoverFixOptions) (CoverFixResult, error) {
 	var res CoverFixResult
 
+	// Find the folders first, then process up to opt.Parallel albums at once:
+	// one album's lookup and cover download overlap another's file rewrites.
+	// Each album's messages are printed as one block, in folder order.
+	var dirs []string
 	err := filepath.WalkDir(root, func(dir string, d os.DirEntry, err error) error {
 		if err != nil {
 			fmt.Printf("✖ %s: %v\n", dir, err)
 			res.Failed++
 			return nil
 		}
-		if !d.IsDir() {
-			return nil
+		if d.IsDir() {
+			dirs = append(dirs, dir)
 		}
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			fmt.Printf("✖ %s: %v\n", dir, err)
-			res.Failed++
-			return nil
-		}
-
-		var oldCovers, trackPaths []string
-		var tracks []trackInfo
-		for _, e := range entries {
-			if e.IsDir() {
-				continue
-			}
-			name := e.Name()
-			if isCoverImage(name) {
-				oldCovers = append(oldCovers, filepath.Join(dir, name))
-				continue
-			}
-			if t, ok := readTrackInfo(filepath.Join(dir, name)); ok {
-				tracks = append(tracks, t)
-				trackPaths = append(trackPaths, filepath.Join(dir, name))
-			}
-		}
-		if len(tracks) == 0 {
-			return nil
-		}
-
-		if why := notOneAlbum(tracks); why != "" {
-			fmt.Printf("– %s: %s, skipped\n", dir, why)
-			res.Skipped++
-			return nil
-		}
-
-		if opt.DryRun {
-			fmt.Printf("• %s: would replace %s with cover.%s, and re-embed %d tracks\n", dir, describe(oldCovers), opt.Cover.Format, len(trackPaths))
-			res.Refreshed++
-			return nil
-		}
-
-		template, via, err := r.findAlbumArtwork(tracks, storefront, token)
-		if err != nil {
-			fmt.Printf("✖ %s: %v (kept existing covers)\n", dir, err)
-			res.Failed++
-			return nil
-		}
-
-		newCover, err := saveArtwork(filepath.Join(dir, "cover."+opt.Cover.Format), opt.Cover.url(template))
-		if err != nil {
-			fmt.Printf("✖ %s: cover download failed: %v (kept existing covers)\n", dir, err)
-			res.Failed++
-			return nil
-		}
-		for _, old := range oldCovers {
-			if filepath.Clean(old) == filepath.Clean(newCover) {
-				continue
-			}
-			if err := os.Remove(old); err != nil && !os.IsNotExist(err) {
-				fmt.Printf("  could not remove %s: %v\n", old, err)
-			}
-		}
-
-		var embedImg []byte
-		if opt.Embed == opt.Cover {
-			embedImg, err = os.ReadFile(newCover)
-		} else {
-			embedImg, err = fetchArtwork(opt.Embed.url(template))
-		}
-		if err != nil {
-			fmt.Printf("✖ %s: cover saved, but embed image download failed: %v\n", dir, err)
-			res.Failed++
-			return nil
-		}
-		embedded, failed := 0, 0
-		// FLAC can hold at most a 16 MB picture. When it is too large, the
-		// track is retried with a smaller PNG (see pngRetrySteps); the size
-		// that fits is then used for the album's other FLAC tracks too.
-		flacImg, flacSpec := embedImg, opt.Embed
-		for _, tp := range trackPaths {
-			img, spec := embedImg, opt.Embed
-			if strings.EqualFold(filepath.Ext(tp), ".flac") {
-				img, spec = flacImg, flacSpec
-			}
-			err := embedPicture(tp, img, spec.mime())
-			var tooLarge *FLACPictureTooLargeError
-			for errors.As(err, &tooLarge) && spec.Format == "png" {
-				step := nextPNGStep(tooLarge.Width)
-				if step == 0 {
-					break
-				}
-				fmt.Printf("  %s: %v; retrying with png %dx%d\n", filepath.Base(tp), err, step, step)
-				spec = ArtSpec{Format: "png", Res: step}
-				smaller, dlErr := fetchArtwork(spec.url(template))
-				if dlErr != nil {
-					err = fmt.Errorf("download png %dx%d: %w", step, step, dlErr)
-					break
-				}
-				img = smaller
-				err = embedPicture(tp, img, spec.mime())
-				if err == nil {
-					flacImg, flacSpec = img, spec
-				}
-			}
-			if err != nil {
-				fmt.Printf("  could not embed into %s: %v\n", filepath.Base(tp), err)
-				failed++
-				continue
-			}
-			embedded++
-		}
-		if flacSpec != opt.Embed {
-			fmt.Printf("  FLAC tracks embedded with %s (%s was too large for FLAC)\n", flacSpec, opt.Embed)
-		}
-		res.TracksEmbedded += embedded
-		res.TracksFailed += failed
-
-		fmt.Printf("✔ %s: %s, embedded in %d/%d tracks (album found by %s)\n", dir, filepath.Base(newCover), embedded, len(trackPaths), via)
-		res.Refreshed++
 		return nil
 	})
+
+	type albumDone struct {
+		out string
+		res CoverFixResult
+	}
+	n := opt.Parallel
+	if n < 1 {
+		n = 1
+	}
+	results := make([]chan albumDone, len(dirs))
+	for i := range results {
+		results[i] = make(chan albumDone, 1)
+	}
+	go func() {
+		slots := make(chan struct{}, n)
+		for i, dir := range dirs {
+			slots <- struct{}{}
+			go func(i int, dir string) {
+				defer func() { <-slots }()
+				var out bytes.Buffer
+				ar := r.refreshAlbum(&out, dir, storefront, token, opt)
+				results[i] <- albumDone{out.String(), ar}
+			}(i, dir)
+		}
+	}()
+	for i := range dirs {
+		d := <-results[i]
+		fmt.Print(d.out)
+		res.Refreshed += d.res.Refreshed
+		res.Skipped += d.res.Skipped
+		res.Failed += d.res.Failed
+		res.TracksEmbedded += d.res.TracksEmbedded
+		res.TracksFailed += d.res.TracksFailed
+		res.TracksUnchanged += d.res.TracksUnchanged
+	}
 	return res, err
+}
+
+// refreshAlbum refreshes the covers of one folder, writing its messages to w.
+// Folders without tracks are left alone. It only reads r.Config, so several
+// albums can run at once.
+func (r *Runner) refreshAlbum(w io.Writer, dir, storefront, token string, opt CoverFixOptions) CoverFixResult {
+	var res CoverFixResult
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		fmt.Fprintf(w, "✖ %s: %v\n", dir, err)
+		res.Failed++
+		return res
+	}
+
+	var oldCovers, trackPaths []string
+	var tracks []trackInfo
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if isCoverImage(name) {
+			oldCovers = append(oldCovers, filepath.Join(dir, name))
+			continue
+		}
+		if t, ok := readTrackInfo(filepath.Join(dir, name)); ok {
+			tracks = append(tracks, t)
+			trackPaths = append(trackPaths, filepath.Join(dir, name))
+		}
+	}
+	if len(tracks) == 0 {
+		return res
+	}
+
+	if why := notOneAlbum(tracks); why != "" {
+		fmt.Fprintf(w, "– %s: %s, skipped\n", dir, why)
+		res.Skipped++
+		return res
+	}
+
+	if opt.DryRun {
+		fmt.Fprintf(w, "• %s: would replace %s with cover.%s, and re-embed %d tracks\n", dir, describe(oldCovers), opt.Cover.Format, len(trackPaths))
+		res.Refreshed++
+		return res
+	}
+
+	template, via, err := r.findAlbumArtwork(tracks, storefront, token)
+	if err != nil {
+		fmt.Fprintf(w, "✖ %s: %v (kept existing covers)\n", dir, err)
+		res.Failed++
+		return res
+	}
+
+	newCover, err := saveArtwork(filepath.Join(dir, "cover."+opt.Cover.Format), opt.Cover.url(template))
+	if err != nil {
+		fmt.Fprintf(w, "✖ %s: cover download failed: %v (kept existing covers)\n", dir, err)
+		res.Failed++
+		return res
+	}
+	for _, old := range oldCovers {
+		if filepath.Clean(old) == filepath.Clean(newCover) {
+			continue
+		}
+		if err := os.Remove(old); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(w, "  could not remove %s: %v\n", old, err)
+		}
+	}
+
+	var embedImg []byte
+	if opt.Embed == opt.Cover {
+		embedImg, err = os.ReadFile(newCover)
+	} else {
+		embedImg, err = fetchArtwork(opt.Embed.url(template))
+	}
+	if err != nil {
+		fmt.Fprintf(w, "✖ %s: cover saved, but embed image download failed: %v\n", dir, err)
+		res.Failed++
+		return res
+	}
+	embedded, failed, unchanged := 0, 0, 0
+	// FLAC can hold at most a 16 MB picture. When it is too large, the
+	// track is retried with a smaller PNG (see pngRetrySteps); the size
+	// that fits is then used for the album's other FLAC tracks too.
+	flacImg, flacSpec := embedImg, opt.Embed
+	for _, tp := range trackPaths {
+		img, spec := embedImg, opt.Embed
+		if strings.EqualFold(filepath.Ext(tp), ".flac") {
+			img, spec = flacImg, flacSpec
+		}
+		if !opt.Force && alreadyEmbedded(tp, img) {
+			unchanged++
+			continue
+		}
+		err := embedPicture(tp, img, spec.mime())
+		var tooLarge *FLACPictureTooLargeError
+		for errors.As(err, &tooLarge) && spec.Format == "png" {
+			step := nextPNGStep(tooLarge.Width)
+			if step == 0 {
+				break
+			}
+			fmt.Fprintf(w, "  %s: %v; retrying with png %dx%d\n", filepath.Base(tp), err, step, step)
+			spec = ArtSpec{Format: "png", Res: step}
+			smaller, dlErr := fetchArtwork(spec.url(template))
+			if dlErr != nil {
+				err = fmt.Errorf("download png %dx%d: %w", step, step, dlErr)
+				break
+			}
+			img = smaller
+			if !opt.Force && alreadyEmbedded(tp, img) {
+				err = nil // already has this smaller picture from an earlier run
+			} else {
+				err = embedPicture(tp, img, spec.mime())
+			}
+			if err == nil {
+				flacImg, flacSpec = img, spec
+			}
+		}
+		if err != nil {
+			fmt.Fprintf(w, "  could not embed into %s: %v\n", filepath.Base(tp), err)
+			failed++
+			continue
+		}
+		embedded++
+	}
+	if flacSpec != opt.Embed {
+		fmt.Fprintf(w, "  FLAC tracks embedded with %s (%s was too large for FLAC)\n", flacSpec, opt.Embed)
+	}
+	res.TracksEmbedded += embedded
+	res.TracksFailed += failed
+	res.TracksUnchanged += unchanged
+
+	note := ""
+	if unchanged > 0 {
+		note = fmt.Sprintf(", %d already had it", unchanged)
+	}
+	fmt.Fprintf(w, "✔ %s: %s, embedded in %d/%d tracks%s (album found by %s)\n", dir, filepath.Base(newCover), embedded, len(trackPaths), note, via)
+	res.Refreshed++
+	return res
+}
+
+// alreadyEmbedded reports whether a track's only embedded picture is exactly
+// img, so rewriting it would change nothing.
+func alreadyEmbedded(path string, img []byte) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".flac":
+		ok, err := flacHasPicture(path, img)
+		return err == nil && ok
+	case ".m4a":
+		f, err := mp4tag.Open(path)
+		if err != nil {
+			return false
+		}
+		defer f.Close()
+		tags, err := f.Read()
+		return err == nil && len(tags.Pictures) == 1 && bytes.Equal(tags.Pictures[0].Data, img)
+	}
+	return false
 }
 
 // pngRetrySteps are the PNG sizes tried, largest first, when a picture is too
