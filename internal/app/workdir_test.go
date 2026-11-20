@@ -1,6 +1,8 @@
 package app
 
 import (
+	"amdl/internal/config"
+
 	"fmt"
 	"os"
 	"path/filepath"
@@ -135,5 +137,23 @@ func TestPipelineWithWorkDir(t *testing.T) {
 	left, _ := os.ReadDir(work)
 	if len(left) != 0 {
 		t.Errorf("work folder not empty: %v", left)
+	}
+}
+
+// The same song twice in a list gets two work folders: queueing the second
+// copy must not delete the first copy's folder while it is still in use.
+func TestTrackWorkDirUniquePerJob(t *testing.T) {
+	r := NewRunner(config.ConfigSet{})
+	r.Config.Paths.WorkDir = t.TempDir()
+	a := r.trackWorkDir("1640123457")
+	if err := os.WriteFile(filepath.Join(a, "x.part.m4a"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := r.trackWorkDir("1640123457")
+	if a == "" || b == "" || a == b {
+		t.Fatalf("work folders %q and %q", a, b)
+	}
+	if _, err := os.Stat(filepath.Join(a, "x.part.m4a")); err != nil {
+		t.Errorf("first copy's file is gone: %v", err)
 	}
 }

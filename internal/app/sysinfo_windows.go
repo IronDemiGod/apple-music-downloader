@@ -23,7 +23,9 @@ func freeBytes(path string) (int64, error) {
 func pidAlive(pid int) bool {
 	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 	if err != nil {
-		return false
+		// Access denied: it exists (another user's, or elevated). Only "no
+		// such process" means it has ended.
+		return err == windows.ERROR_ACCESS_DENIED
 	}
 	defer windows.CloseHandle(h)
 	var code uint32

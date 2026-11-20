@@ -15,6 +15,8 @@ import (
 	defrag "amdl/internal/media/defrag"
 	"amdl/internal/media/lyrics"
 	"amdl/internal/model"
+
+	"amdl/internal/fsutil"
 )
 
 // Background work. The main goroutine walks the tracks in order (names,
@@ -88,9 +90,10 @@ type trackJob struct {
 	post          bool
 	track         *model.Track
 	lrc           string
-	partPath      string // where the download is written
-	finalPath     string // the .m4a name once tagged
-	coverToRemove string // per-track playlist cover, deleted after tagging
+	partPath      string        // where the download is written
+	finalPath     string        // the .m4a name once tagged
+	coverToRemove string        // per-track playlist cover, deleted after tagging
+	cover         *pendingCover // album cover still downloading; waited for at tagging
 	// workDir: the track's work folder (paths.work-dir), or "" to work in
 	// the save folder. Everything finished in it is moved there at the end.
 	workDir string
@@ -213,6 +216,9 @@ func (r *Runner) runJob(job trackJob) trackResult {
 		} else if job.post {
 			os.Remove(job.partPath)
 		}
+		if job.download && job.coverToRemove != "" {
+			os.Remove(job.coverToRemove)
+		}
 		res.counter = counter
 		res.output = out.String()
 		return res
@@ -269,6 +275,11 @@ func (r *Runner) runJob(job trackJob) trackResult {
 			return fail("error", "Failed to download: %v", err)
 		}
 		mark("download")
+		if job.workDir != "" {
+			// Large tracks are written to a new file and renamed over the
+			// pre-created one, which loses the temporary attribute (Windows).
+			_ = fsutil.MarkTemporary(job.partPath)
+		}
 		if fi, err := os.Stat(job.partPath); err == nil {
 			res.bytes = fi.Size()
 			d := res.stages[len(res.stages)-1].d
@@ -324,6 +335,13 @@ func (r *Runner) runJob(job trackJob) trackResult {
 			mark("alac-fix")
 		}
 
+		if job.cover != nil {
+			path, err := job.cover.wait()
+			if err != nil {
+				fmt.Fprintf(&out, "Failed to write cover: %v\n", err)
+			}
+			job.track.CoverPath = path
+		}
 		if err := r.writeMP4Tags(job.track, job.partPath, job.lrc); err != nil {
 			return fail("unavailable", "⚠ Failed to write tags in media: %v", err)
 		}
@@ -441,6 +459,7 @@ func (r *Runner) applyJob(res trackResult) {
 // waitJobs blocks until every queued job is done, applying (and printing)
 // each one as soon as it and all jobs before it have finished.
 func (r *Runner) waitJobs() {
+	r.waitCovers() // also covers no queued track waits for (all tracks existed)
 	if r.bg == nil {
 		return
 	}
@@ -456,4 +475,42 @@ func (r *Runner) waitJobs() {
 		<-r.bg.notify
 	}
 	r.addWaitTiming(time.Since(start))
+}
+
+// pendingCover is an album cover that is still downloading. An album's tracks
+// are queued without waiting for it (with artwork "original" Apple renders a
+// large PNG, which can take seconds) and wait for it only when they are
+// tagged, so downloads keep going meanwhile.
+type pendingCover struct {
+	done chan struct{}
+	path string
+	err  error
+}
+
+func (p *pendingCover) wait() (string, error) {
+	<-p.done
+	return p.path, p.err
+}
+
+// waitCovers waits for the album covers still downloading.
+func (r *Runner) waitCovers() {
+	if r.coverWG != nil {
+		r.coverWG.Wait()
+	}
+}
+
+// startCover downloads an album cover in the background; tracks queued after
+// it take it as their cover.
+func (r *Runner) startCover(dir, url string) {
+	p := &pendingCover{done: make(chan struct{})}
+	if r.coverWG == nil {
+		r.coverWG = &sync.WaitGroup{}
+	}
+	r.coverWG.Add(1)
+	go func() {
+		defer r.coverWG.Done()
+		defer close(p.done)
+		p.path, p.err = r.writeCover(dir, "cover", url)
+	}()
+	r.albumCover = p
 }

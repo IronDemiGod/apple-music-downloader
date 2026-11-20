@@ -281,6 +281,7 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 			partPath:      partPath,
 			finalPath:     trackPath,
 			coverToRemove: coverToRemove,
+			cover:         r.albumCover,
 			workDir:       workDir,
 			preID:         track.PreID,
 			taskNum:       track.TaskNum,
@@ -367,6 +368,9 @@ func (r *Runner) ripTrack(track *model.Track, token string, mediaUserToken strin
 			r.sayln("Failed to run v4:", err)
 			r.State.Counter.Error++
 			return
+		}
+		if workDir != "" {
+			_ = fsutil.MarkTemporary(partPath) // see bgwork.go
 		}
 
 	}
@@ -746,12 +750,26 @@ func (r *Runner) ripAlbum(albumId string, token string, storefront string, media
 	// refreshes covers); downloading it again for every run made checking
 	// already downloaded tracks slow.
 	covPath := r.existingCover(albumFolderPath, "cover", meta.Data[0].Attributes.Artwork.URL)
-	if covPath == "" {
-		covPath, err = r.writeCover(albumFolderPath, "cover", meta.Data[0].Attributes.Artwork.URL)
+	// The cover is fetched once the live list is up (startCover): when the
+	// tracks go through the background jobs (as in ripTrack), in the
+	// background, and each track takes it when it is tagged.
+	startCover := func() {
+		if covPath != "" {
+			return
+		}
+		if r.parallelDownloads() > 1 || r.live != nil {
+			r.startCover(albumFolderPath, meta.Data[0].Attributes.Artwork.URL)
+			return
+		}
+		path, err := r.writeCover(albumFolderPath, "cover", meta.Data[0].Attributes.Artwork.URL)
 		if err != nil {
 			r.sayln("Failed to write cover.")
 		}
+		for i := range album.Tracks {
+			album.Tracks[i].CoverPath = path
+		}
 	}
+	defer func() { r.albumCover = nil }()
 	if r.Config.Metadata.Artwork.SaveAnimated {
 		r.saveAnimatedArtwork(
 			albumFolderPath,
@@ -803,7 +821,16 @@ func (r *Runner) ripAlbum(albumId string, token string, storefront string, media
 			r.State.Counter.Unavailable++
 		}
 		r.beginLive(meta.Data[0].Attributes.ArtistName+" — "+meta.Data[0].Attributes.Name, wanted)
+		startCover()
 		for _, t := range wanted {
+			// Done in an earlier pass (a retry after errors): count it again
+			// without downloading or listing it twice.
+			if contains(r.State.OKDict[albumId], t.TaskNum) {
+				r.State.Counter.Total++
+				r.State.Counter.Success++
+				r.markLiveDone(t.TaskNum)
+				continue
+			}
 			r.ripTrack(t, token, mediaUserToken)
 		}
 		r.endLive()
@@ -818,6 +845,7 @@ func (r *Runner) ripAlbum(albumId string, token string, storefront string, media
 	}
 	startIdx := len(r.State.AddedTracks)
 	r.beginLive(meta.Data[0].Attributes.ArtistName+" — "+meta.Data[0].Attributes.Name, selectedTracks(album.Tracks, selected))
+	startCover()
 	for i := range album.Tracks {
 		i++
 		if contains(r.State.OKDict[albumId], i) {
@@ -1134,16 +1162,19 @@ func (r *Runner) ripPlaylistIntoAlbumFolders(playlist *model.Playlist, playlistN
 			msg := fmt.Sprintf("\u26A0 Failed to rip album %s: %v", albumId, err)
 			if r.live == nil {
 				fmt.Println(msg)
-				continue
+			} else {
+				failures = append(failures, msg)
 			}
-			failures = append(failures, msg)
 			for _, id := range albumTrackIDs[albumId] {
 				r.State.Counter.Total++
 				r.State.Counter.Error++
-				r.live.failItem(id, fmt.Sprintf("album %s: %v", albumId, err))
+				if r.live != nil {
+					r.live.failItem(id, fmt.Sprintf("album %s: %v", albumId, err))
+				}
 			}
 		}
 	}
+	r.waitCovers() // they copy from the prefetcher's cache, which stop removes
 	pf.stop(albumOrder, storefront)
 	r.liveHeld = false
 	r.endLive()

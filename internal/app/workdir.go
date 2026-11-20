@@ -58,8 +58,12 @@ func (r *Runner) workRunDir() string {
 		return ""
 	}
 	r.workRun = run
+	removeOnInterrupt(run)
 	return run
 }
+
+// workSeq numbers the track work folders of this run (main goroutine only).
+var workSeq int
 
 // trackWorkDir returns a fresh work folder for one track, or "" to work in
 // the save folder (no work-dir, or not enough free space in it).
@@ -73,8 +77,10 @@ func (r *Runner) trackWorkDir(trackID string) string {
 		r.sayf("work-dir has only %d MB free; this track works in its save folder.\n", free>>20)
 		return ""
 	}
-	dir := filepath.Join(run, sanitizeWorkName(trackID))
-	os.RemoveAll(dir) // a leftover from the same song earlier in this run
+	// Unique per track job: the same song can be in a list twice, and its
+	// first copy may still be downloading or being processed.
+	workSeq++
+	dir := filepath.Join(run, sanitizeWorkName(trackID)+"-"+strconv.Itoa(workSeq))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		r.sayf("work-dir: %v; this track works in its save folder.\n", err)
 		return ""

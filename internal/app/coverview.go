@@ -85,6 +85,7 @@ func (r *Runner) newCoverView(total int) *coverView {
 	v := &coverView{out: os.Stdout, total: total, start: time.Now(), active: map[int]*coverAlbum{},
 		stop: make(chan struct{}), done: make(chan struct{})}
 	io.WriteString(v.out, "\x1b[?25l")
+	cursorHidden(v.out)
 	go func() {
 		defer close(v.done)
 		t := time.NewTicker(150 * time.Millisecond)
@@ -148,6 +149,7 @@ func (v *coverView) finish() {
 	<-v.done
 	v.render()
 	io.WriteString(v.out, "\x1b[?25h")
+	cursorHidden(nil)
 }
 
 func (v *coverView) moveToTop(b *bytes.Buffer) {

@@ -21,14 +21,15 @@ func visible(s string) string { return ansiRe.ReplaceAllString(s, "") }
 func TestParseProgress(t *testing.T) {
 	// Exactly what the download's progress bar writes (captured from the
 	// progressbar options used by fairplay-rip).
-	out := "\rDecrypting...   2%  (1.0/40 MB, 244 GB/s) \r                                          \r" +
+	out := "\rDecrypting...   0%  (900 kB/40 MB, 1.2 MB/s) \r" +
+		"\rDecrypting...   2%  (1.0/40 MB, 244 GB/s) \r                                          \r" +
 		"\rDecrypting...  35%  (14/40 MB, 1.4 GB/s) \r                                          \r" +
 		"\rDecrypting... 100%  (40/40 MB, 1.3 GB/s) [0s]\nDecrypted\n"
 	var got []string
 	parseProgress(strings.NewReader(out), func(done, total int64) {
 		got = append(got, fmt.Sprintf("%d/%d", done, total))
 	})
-	want := "1000000/40000000 14000000/40000000 40000000/40000000"
+	want := "900000/40000000 1000000/40000000 14000000/40000000 40000000/40000000"
 	if strings.Join(got, " ") != want {
 		t.Errorf("got %v, want %s", got, want)
 	}

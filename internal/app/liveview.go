@@ -119,6 +119,7 @@ func (r *Runner) startLive(title string, tracks []liveItem) *liveView {
 		v.items = append(v.items, &it)
 	}
 	io.WriteString(v.out, "\x1b[?25l") // hide the cursor while redrawing
+	cursorHidden(v.out)
 	v.captureStdout()
 	v.render()
 	go func() {
@@ -280,6 +281,7 @@ func (v *liveView) finish() {
 	v.releaseStdout()
 	v.render()
 	io.WriteString(v.out, "\x1b[?25h") // show the cursor again
+	cursorHidden(nil)
 }
 
 // render redraws the list in place.
@@ -614,8 +616,9 @@ func formatQuality(q string, atmos, aac bool) string {
 }
 
 // progressRe matches a frame of the download's progress bar, e.g.
-// "Decrypting...  35%  (14/40 MB, 1.4 GB/s)".
-var progressRe = regexp.MustCompile(`(\d+)%\s+\(([\d.]+)/([\d.]+) ([kMG]?B)`)
+// "Decrypting...  35%  (14/40 MB, 1.4 GB/s)", or with the current value in
+// another unit: "(900 kB/40 MB, ...)".
+var progressRe = regexp.MustCompile(`(\d+)%\s+\(\s*([\d.]+)(?: ([kMG]?B))?/([\d.]+) ([kMG]?B)`)
 
 // parseProgress reads the progress bar output of a download worker and calls
 // report(done, total) for every frame. Frames are separated by \r or \n.
@@ -624,11 +627,16 @@ func parseProgress(r io.Reader, report func(done, total int64)) {
 	var frame []byte
 	flush := func() {
 		if m := progressRe.FindSubmatch(frame); m != nil {
-			unit := map[string]float64{"B": 1, "kB": 1e3, "MB": 1e6, "GB": 1e9}[string(m[4])]
+			units := map[string]float64{"B": 1, "kB": 1e3, "MB": 1e6, "GB": 1e9}
+			tUnit := units[string(m[5])]
+			dUnit := tUnit
+			if len(m[3]) > 0 {
+				dUnit = units[string(m[3])]
+			}
 			d, _ := strconv.ParseFloat(string(m[2]), 64)
-			t, _ := strconv.ParseFloat(string(m[3]), 64)
-			if unit > 0 && t > 0 {
-				report(int64(d*unit), int64(t*unit))
+			t, _ := strconv.ParseFloat(string(m[4]), 64)
+			if dUnit > 0 && tUnit > 0 && t > 0 {
+				report(int64(d*dUnit), int64(t*tUnit))
 			}
 		}
 		frame = frame[:0]

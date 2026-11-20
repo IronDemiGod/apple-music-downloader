@@ -6,6 +6,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 var (
@@ -52,6 +53,10 @@ type Runner struct {
 	// prefetching marks the prefetch workers' own runner.
 	covers      *coverCache
 	prefetching bool
+	// albumCover is the cover of the album being queued while it still
+	// downloads (see pendingCover); coverWG counts those downloads.
+	albumCover *pendingCover
+	coverWG    *sync.WaitGroup
 
 	// sayItem is the live list entry of the track being prepared on the main
 	// goroutine; sayf/sayln send its messages there instead of the screen.
@@ -72,7 +77,13 @@ func (r *Runner) sayf(format string, a ...any) {
 		return
 	}
 	msg = strings.TrimSpace(msg)
-	if msg == "" || r.sayItem == nil {
+	if msg == "" {
+		return
+	}
+	if r.sayItem == nil {
+		// Not about one track (e.g. an album's cover failed): stdout is
+		// captured while the list is up and drawn above the bars.
+		fmt.Println(msg)
 		return
 	}
 	r.live.update(r.sayItem, func(it *liveItem) { it.notes = append(it.notes, msg) })
